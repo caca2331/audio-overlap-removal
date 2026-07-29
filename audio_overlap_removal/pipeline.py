@@ -13,6 +13,7 @@ from .alignment import discover_alignment_segments
 from .cancellation import _cancel_chunk, _passthrough_channels
 from .media import (
     DEFAULT_SR,
+    MAX_MEDIA_DURATION_SEC,
     MIN_SAMPLE_RATE,
     _atomic_soundfile,
     _audio_channel_count,
@@ -112,6 +113,16 @@ def scan_reference(
         raise ValueError("end must be finite.")
 
     mixture_duration = _media_duration(mixture_path)
+    reference_duration = _media_duration(reference_path)
+    for label, duration in (
+        ("mixture", mixture_duration),
+        ("reference", reference_duration),
+    ):
+        if duration > MAX_MEDIA_DURATION_SEC + 1e-3:
+            raise ValueError(
+                f"{label} duration ({duration:.3f}s) exceeds the supported "
+                f"24-hour limit."
+            )
     if start >= mixture_duration:
         raise ValueError(
             f"start ({start:.3f}s) is outside the mixture ({mixture_duration:.3f}s)."
@@ -131,6 +142,7 @@ def scan_reference(
         workers=workers,
         mixture_start_sec=start,
         mixture_duration_sec=scan_end - start,
+        reference_duration_sec=reference_duration,
     )
     return _clip_alignment_segments(segments, start, scan_end)
 
