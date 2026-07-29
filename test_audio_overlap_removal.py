@@ -29,10 +29,15 @@ from audio_overlap_removal.cancellation import (
     _estimate_gain_envelope,
 )
 from audio_overlap_removal.cli import _build_parser, _run_cli
+from audio_overlap_removal.fingerprint import (
+    FingerprintIndex,
+    fingerprint_blocks,
+)
 from audio_overlap_removal.media import (
     _atomic_soundfile,
     _audio_channel_count,
     _decode_stereo,
+    _iter_decode_mono_low,
     _output_settings,
     _paths_refer_to_same_file,
     _processing_channel_count,
@@ -130,6 +135,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         self.assertEqual(args.start, 120.0)
         self.assertEqual(args.end, 360.0)
         self.assertEqual(args.strength, 1.0)
+        self.assertEqual(args.workers, 4)
         self.assertFalse(hasattr(args, "offset"))
         self.assertFalse(hasattr(args, "duration"))
 
@@ -183,7 +189,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             silence_cleanup_strength=None,
             adaptive_time_warp=True,
             sr=48_000,
-            workers=1,
+            workers=4,
         )
 
     def test_scan_reference_limits_discovery_and_clips_segments(self) -> None:
@@ -208,12 +214,21 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         discover.assert_called_once_with(
             "mixture.wav",
             "reference.wav",
-            workers=1,
+            workers=4,
             mixture_start_sec=120.0,
             mixture_duration_sec=240.0,
+            reference_duration_sec=600.0,
         )
         self.assertEqual(segments[0].mixture_start, 120.0)
         self.assertEqual(segments[0].mixture_end, 360.0)
+
+    def test_scan_reference_rejects_media_over_24_hours(self) -> None:
+        with patch(
+            "audio_overlap_removal.pipeline._media_duration",
+            side_effect=(24.0 * 60.0 * 60.0 + 1.0, 60.0),
+        ):
+            with self.assertRaisesRegex(ValueError, "24-hour"):
+                scan_reference("mixture.wav", "reference.wav")
 
     def test_remove_reference_composes_scan_and_processing(self) -> None:
         segments = [AlignmentSegment(120.0, 360.0, 20.0, 0.9)]
@@ -269,6 +284,116 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         self.assertEqual(decoded.ndim, 2)
         self.assertEqual(decoded.shape[1], 2)
         self.assertGreaterEqual(len(decoded), frames - 1)
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg"),
+        "FFmpeg is required for the streaming decode integration test.",
+    )
+    def test_streaming_low_rate_decode_yields_bounded_blocks(self) -> None:
+        sr = 8_000
+        frames = 2_003
+        time_axis = np.arange(frames, dtype=np.float32) / sr
+        audio = 0.1 * np.sin(2.0 * np.pi * 440.0 * time_axis)
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "mono.wav")
+            sf.write(source, audio, sr, subtype="FLOAT")
+            blocks = list(
+                _iter_decode_mono_low(
+                    str(source),
+                    sr,
+                    block_frames=137,
+                )
+            )
+
+        self.assertTrue(blocks)
+        self.assertTrue(all(len(block) <= 137 for block in blocks))
+        np.testing.assert_allclose(
+            np.concatenate(blocks),
+            audio,
+            atol=2e-6,
+            rtol=0.0,
+        )
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg"),
+        "FFmpeg is required for the streaming error integration test.",
+    )
+    def test_streaming_decode_reports_invalid_media(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "invalid.wav")
+            source.write_bytes(b"not audio")
+            with self.assertRaisesRegex(RuntimeError, "ffmpeg failed"):
+                list(_iter_decode_mono_low(str(source), 1_000))
+
+    def test_fingerprint_index_returns_media_id_and_compact_candidates(self) -> None:
+        sr = 500
+        rng = np.random.default_rng(405)
+        first = rng.standard_normal(30 * sr).astype(np.float32)
+        second = rng.standard_normal(30 * sr).astype(np.float32)
+        first_track = fingerprint_blocks(
+            [first],
+            "first",
+            sr=sr,
+            query_sec=2.0,
+        )
+        second_track = fingerprint_blocks(
+            [second],
+            "second",
+            sr=sr,
+            query_sec=2.0,
+        )
+        index = FingerprintIndex([first_track, second_track])
+
+        candidate = index.query(second_track.features[20], candidates=4)[0]
+
+        self.assertEqual(candidate.media_id, "second")
+        self.assertAlmostEqual(candidate.time_sec, second_track.times[20])
+        self.assertGreater(candidate.score, 0.999)
+        bytes_per_window = index.memory_bytes / index.entry_count
+        estimated_24_hour_index = bytes_per_window * (24 * 60 * 60 / 0.25)
+        self.assertLess(estimated_24_hour_index, 512 * 1024 * 1024)
+
+    def test_alignment_strategy_preserves_short_file_fft_path(self) -> None:
+        with (
+            patch(
+                "audio_overlap_removal.alignment._discover_full_alignment_segments",
+                return_value=[],
+            ) as full,
+            patch(
+                "audio_overlap_removal.alignment._discover_indexed_alignment_segments",
+                return_value=[],
+            ) as indexed,
+        ):
+            discover_alignment_segments(
+                "mixture",
+                "reference",
+                mixture_duration_sec=4.0 * 60.0 * 60.0,
+                reference_duration_sec=4.0 * 60.0 * 60.0,
+            )
+
+        full.assert_called_once()
+        indexed.assert_not_called()
+
+    def test_alignment_strategy_indexes_media_over_four_hours(self) -> None:
+        with (
+            patch(
+                "audio_overlap_removal.alignment._discover_full_alignment_segments",
+                return_value=[],
+            ) as full,
+            patch(
+                "audio_overlap_removal.alignment._discover_indexed_alignment_segments",
+                return_value=[],
+            ) as indexed,
+        ):
+            discover_alignment_segments(
+                "mixture",
+                "reference",
+                mixture_duration_sec=4.0 * 60.0 * 60.0 + 1.0,
+                reference_duration_sec=60.0,
+            )
+
+        indexed.assert_called_once()
+        full.assert_not_called()
 
     @unittest.skipUnless(
         shutil.which("ffmpeg") and shutil.which("ffprobe"),
@@ -632,6 +757,280 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         self.assertTrue(any(abs(value - 4.0) < 0.15 for value in offsets))
         self.assertTrue(any(abs(value - 14.0) < 0.15 for value in offsets))
         self.assertEqual(parallel_segments, segments)
+
+    def test_indexed_discovery_reacquires_after_pause_and_replay(self) -> None:
+        sr = 500
+        rng = np.random.default_rng(406)
+        reference = rng.standard_normal(24 * sr).astype(np.float32)
+        mixture = (0.05 * rng.standard_normal(30 * sr)).astype(np.float32)
+
+        def copy_region(
+            mixture_start: float,
+            mixture_end: float,
+            reference_start: float,
+        ) -> None:
+            frames = int(round((mixture_end - mixture_start) * sr))
+            mixture_index = int(round(mixture_start * sr))
+            reference_index = int(round(reference_start * sr))
+            mixture[mixture_index : mixture_index + frames] += reference[
+                reference_index : reference_index + frames
+            ]
+
+        copy_region(2.0, 8.0, 0.0)
+        copy_region(10.0, 16.0, 6.0)
+        copy_region(16.0, 22.0, 2.0)
+        reference_track = fingerprint_blocks(
+            [reference],
+            "reference",
+            sr=sr,
+            query_sec=2.0,
+        )
+        mixture_track = fingerprint_blocks(
+            [mixture],
+            "mixture",
+            sr=sr,
+            query_sec=2.0,
+        )
+
+        def build_track(path: str, media_id: str, **kwargs):
+            self.assertEqual(kwargs["sr"], sr)
+            return reference_track if media_id == "reference" else mixture_track
+
+        def discover(workers: int) -> list[AlignmentSegment]:
+            with patch(
+                "audio_overlap_removal.alignment.fingerprint_media",
+                side_effect=build_track,
+            ):
+                return discover_alignment_segments(
+                    "mixture",
+                    "reference",
+                    align_sr=sr,
+                    global_step_sec=1.0,
+                    query_sec=2.0,
+                    local_step_sec=0.5,
+                    local_search_sec=0.30,
+                    min_score=0.18,
+                    reacquire_after_sec=0.5,
+                    reacquire_interval_sec=0.5,
+                    workers=workers,
+                    mixture_duration_sec=30.0,
+                    reference_duration_sec=24.0,
+                    max_in_memory_sec=0.0,
+                )
+
+        segments = discover(1)
+        parallel_segments = discover(4)
+        offsets = [segment.offset_sec for segment in segments]
+
+        self.assertTrue(any(abs(value - 2.0) < 0.30 for value in offsets))
+        self.assertTrue(any(abs(value - 4.0) < 0.30 for value in offsets))
+        self.assertTrue(any(abs(value - 14.0) < 0.30 for value in offsets))
+        self.assertEqual(parallel_segments, segments)
+
+    def test_indexed_discovery_rejects_unrelated_media(self) -> None:
+        sr = 500
+        rng = np.random.default_rng(407)
+        reference_track = fingerprint_blocks(
+            [rng.standard_normal(60 * sr).astype(np.float32)],
+            "reference",
+            sr=sr,
+            query_sec=2.0,
+        )
+        mixture_track = fingerprint_blocks(
+            [rng.standard_normal(60 * sr).astype(np.float32)],
+            "mixture",
+            sr=sr,
+            query_sec=2.0,
+        )
+
+        def build_track(path: str, media_id: str, **kwargs):
+            return reference_track if media_id == "reference" else mixture_track
+
+        with patch(
+            "audio_overlap_removal.alignment.fingerprint_media",
+            side_effect=build_track,
+        ):
+            segments = discover_alignment_segments(
+                "mixture",
+                "reference",
+                align_sr=sr,
+                global_step_sec=1.0,
+                query_sec=2.0,
+                local_step_sec=0.5,
+                workers=2,
+                mixture_duration_sec=60.0,
+                reference_duration_sec=60.0,
+                max_in_memory_sec=0.0,
+            )
+
+        self.assertEqual(segments, [])
+
+    def test_compact_long_media_smoke_matches_fft_across_state_changes(
+        self,
+    ) -> None:
+        """Force both strategies on 96 seconds that model hours of state changes."""
+        sr = 500
+        reference_seconds = 70
+        mixture_seconds = 96
+        rng = np.random.default_rng(600)
+
+        reference_time = np.arange(reference_seconds * sr) / sr
+        reference = scipy.signal.sosfilt(
+            scipy.signal.butter(
+                4,
+                [50.0, 210.0],
+                btype="bandpass",
+                fs=sr,
+                output="sos",
+            ),
+            rng.standard_normal(len(reference_time)),
+        )
+        reference += 0.35 * np.sin(
+            2.0
+            * np.pi
+            * (80.0 + 18.0 * np.sin(2.0 * np.pi * 0.017 * reference_time))
+            * reference_time
+        )
+        reference *= 0.65 + 0.35 * np.square(
+            np.sin(2.0 * np.pi * 0.11 * reference_time)
+        )
+        for transient_time in np.arange(1.0, reference_seconds, 3.7):
+            index = int(round(transient_time * sr))
+            frames = min(25, len(reference) - index)
+            reference[index : index + frames] += 2.0 * scipy.signal.windows.hann(frames)
+        reference = (reference / np.std(reference)).astype(np.float32)
+
+        mixture_time = np.arange(mixture_seconds * sr) / sr
+        foreground = (
+            0.18
+            * np.sin(
+                2.0
+                * np.pi
+                * (115.0 + 22.0 * np.sin(2.0 * np.pi * 0.7 * mixture_time))
+                * mixture_time
+            )
+            * (0.4 + 0.6 * np.square(np.sin(2.0 * np.pi * 2.3 * mixture_time)))
+        )
+        mixture = (foreground + 0.04 * rng.standard_normal(len(mixture_time))).astype(
+            np.float32
+        )
+        colored_reference = scipy.signal.sosfilt(
+            scipy.signal.butter(
+                2,
+                170.0,
+                btype="lowpass",
+                fs=sr,
+                output="sos",
+            ),
+            reference,
+        ).astype(np.float32)
+
+        def add_reference(
+            mixture_start: float,
+            mixture_end: float,
+            reference_start: float,
+        ) -> None:
+            frames = int(round((mixture_end - mixture_start) * sr))
+            mixture_index = int(round(mixture_start * sr))
+            reference_index = int(round(reference_start * sr))
+            time_axis = np.arange(frames) / sr
+            dynamic_gain = 0.5 * (0.75 + 0.25 * np.sin(2.0 * np.pi * 0.09 * time_axis))
+            mixture[mixture_index : mixture_index + frames] += (
+                dynamic_gain
+                * colored_reference[reference_index : reference_index + frames]
+            )
+
+        # Continuous playback, a pause/resume, then a backwards replay.
+        add_reference(5.0, 25.0, 0.0)
+        add_reference(32.0, 52.0, 20.0)
+        add_reference(58.0, 78.0, 5.0)
+
+        def decode(path: str, requested_sr: int, start_sec, duration_sec):
+            self.assertEqual(requested_sr, sr)
+            return mixture.copy() if path == "mixture" else reference.copy()
+
+        common_options = {
+            "align_sr": sr,
+            "global_step_sec": 2.0,
+            "query_sec": 2.0,
+            "local_step_sec": 0.5,
+            "local_search_sec": 0.30,
+            "reacquire_after_sec": 1.0,
+            "reacquire_interval_sec": 1.0,
+            "workers": 2,
+            "mixture_duration_sec": float(mixture_seconds),
+            "reference_duration_sec": float(reference_seconds),
+        }
+        with patch(
+            "audio_overlap_removal.alignment._decode_mono_low",
+            side_effect=decode,
+        ):
+            fft_segments = discover_alignment_segments(
+                "mixture",
+                "reference",
+                min_score=0.25,
+                max_in_memory_sec=10_000.0,
+                **common_options,
+            )
+
+        reference_track = fingerprint_blocks(
+            [reference],
+            "reference",
+            sr=sr,
+            query_sec=2.0,
+        )
+        mixture_track = fingerprint_blocks(
+            [mixture],
+            "mixture",
+            sr=sr,
+            query_sec=2.0,
+        )
+
+        def build_track(path: str, media_id: str, **kwargs):
+            return reference_track if media_id == "reference" else mixture_track
+
+        with patch(
+            "audio_overlap_removal.alignment.fingerprint_media",
+            side_effect=build_track,
+        ):
+            indexed_segments = discover_alignment_segments(
+                "mixture",
+                "reference",
+                min_score=0.18,
+                max_in_memory_sec=0.0,
+                **common_options,
+            )
+
+        expected_offsets = (5.0, 12.0, 53.0)
+        self.assertEqual(len(fft_segments), len(expected_offsets))
+        self.assertEqual(len(indexed_segments), len(expected_offsets))
+        for expected, fft_segment, indexed_segment in zip(
+            expected_offsets,
+            fft_segments,
+            indexed_segments,
+        ):
+            self.assertAlmostEqual(fft_segment.offset_sec, expected, delta=0.30)
+            self.assertAlmostEqual(indexed_segment.offset_sec, expected, delta=0.30)
+            self.assertAlmostEqual(
+                indexed_segment.offset_sec,
+                fft_segment.offset_sec,
+                delta=0.30,
+            )
+
+        for active_time in (10.0, 40.0, 65.0):
+            self.assertTrue(
+                any(
+                    segment.mixture_start <= active_time < segment.mixture_end
+                    for segment in indexed_segments
+                )
+            )
+        for passthrough_time in (28.0, 55.0, 85.0):
+            self.assertFalse(
+                any(
+                    segment.mixture_start <= passthrough_time < segment.mixture_end
+                    for segment in indexed_segments
+                )
+            )
 
     def test_segment_discovery_preserves_absolute_scan_timestamps(
         self,

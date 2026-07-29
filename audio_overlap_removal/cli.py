@@ -17,8 +17,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "downmixed to stereo."
         )
     )
-    parser.add_argument("mixture", help="Mixture media containing the target audio.")
-    parser.add_argument("reference", help="Known removable reference media.")
+    parser.add_argument(
+        "mixture",
+        help="Mixture media containing the target audio (maximum 24 hours).",
+    )
+    parser.add_argument(
+        "reference",
+        help="Known removable reference media (maximum 24 hours).",
+    )
     parser.add_argument("output", help="24-bit .flac or .wav output path.")
     parser.add_argument(
         "--start",
@@ -41,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workers",
         type=int,
-        default=1,
+        default=4,
         help=(
             "Parallel alignment queries and cancellation chunks. Higher "
             "values use more CPU and roughly proportional temporary memory."

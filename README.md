@@ -1,78 +1,87 @@
 # Audio Overlap Removal
 
-从混合音频中消除一条已知、内容同源但时间轴可能不同的参考音轨。
+**English** | [简体中文](README.zh-CN.md)
 
-典型场景是直播或录屏：
+Remove a known reference track from a mixture when the reference contains the
+same source material but may follow a different timeline.
 
-- **C（mixture）**：主播声音 + 游戏/BGM；
-- **B（reference）**：干净的游戏/BGM 原轨；
-- **A'（output）**：尽量保留主播声音、消除 B 的结果。
+A typical use case is a livestream or screen recording:
 
-可近似写成 `C = A + B'`。其中 B' 与 B 内容相同，但可能经历音量变化、
-编码损失、EQ、暂停、跳转、重放或轻微播放速度漂移。本项目先寻找 B 在 C
-中的分段位置，再进行参考信号相消和受保护的残留清理。
+- **C (mixture)**: presenter/streamer voice + game audio or BGM;
+- **B (reference)**: a clean copy of the game audio or BGM;
+- **A' (output)**: the result, with B removed while preserving the voice as
+  much as possible.
 
-> 这不是通用的人声/伴奏分离器。若参考文件与混合音中的背景内容不同，
-> 算法会原样通过低置信度区间，而不能“猜出”应当移除的声音。
+This can be approximated as `C = A + B'`. B' contains the same material as B,
+but may have undergone gain changes, lossy encoding, EQ, pauses, seeks,
+replays, or slight playback-speed drift. The project first locates B within C
+as a set of segments, then performs reference cancellation and protected
+residual cleanup.
 
-## 功能概览
+> This is not a general-purpose vocal or source separator. If the reference
+> does not match the background in the mixture, low-confidence regions pass
+> through unchanged; the algorithm cannot guess which sound should be removed.
 
-- 自动扫描参考音轨在混合音频中的位置；
-- 暂停、续播、跳转和重放后可重新获取；
-- 250 ms 局部时间扭曲，并可在验证通过后采用 16 ms 精细路径；
-- 分块解码和处理，避免按原始采样率一次性载入完整媒体；
-- 支持 mono、stereo，以及由 FFmpeg 下混的多声道输入；
-- 保留混合输入的 mono/stereo 布局；
-- 可并行扫描和处理，输出顺序与单线程一致；
-- 输入解码交给 FFmpeg，输出支持 24-bit FLAC 和 WAV。
+## Features
 
-安装后推荐使用 `audio-overlap-removal` 命令；Python 项目也可以直接导入
-`audio_overlap_removal` 包。
+- Automatically locates the reference track within the mixture;
+- Reacquires after pauses, resumes, seeks, and replays;
+- Uses 250 ms local time warping, with a validated 16 ms fine path when useful;
+- Decodes and processes in chunks instead of loading full-rate media at once;
+- Supports mono, stereo, and multichannel inputs downmixed by FFmpeg;
+- Preserves the mixture's mono/stereo layout;
+- Scans and processes in parallel while preserving single-threaded output order;
+- Delegates input decoding to FFmpeg and writes 24-bit FLAC or WAV.
 
-## 安装
+The installed `audio-overlap-removal` command is the recommended interface.
+Python projects can also import the `audio_overlap_removal` package directly.
 
-要求：
+## Installation
 
-- Python 3.10 或更高版本；
-- `ffmpeg` 和 `ffprobe` 可在 `PATH` 中运行；
-- 推荐至少 8 GiB 内存；提高 `--workers` 会增加峰值内存。
+Requirements:
 
-创建虚拟环境并安装：
+- Python 3.10 or later;
+- `ffmpeg` and `ffprobe` available on `PATH`;
+- Mixture and reference files no longer than 24 hours each;
+- At least 8 GiB of memory recommended. Higher `--workers` values increase
+  peak memory use.
+
+Create a virtual environment:
 
 ```bash
 python -m venv .venv
 ```
 
-Windows PowerShell：
+Windows PowerShell:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e .
 ```
 
-macOS / Linux：
+macOS / Linux:
 
 ```bash
 source .venv/bin/activate
 python -m pip install -e .
 ```
 
-确认外部解码器可用：
+Verify that the external decoders are available:
 
 ```bash
 ffmpeg -version
 ffprobe -version
 ```
 
-## 快速开始
+## Quick start
 
-自动扫描并处理完整混合音频：
+Scan and process the complete mixture:
 
 ```bash
 audio-overlap-removal mixture.webm reference.webm clean.flac --strength 1
 ```
 
-在源码目录中也可以通过模块入口运行：
+You can also run the module entry point from the source directory:
 
 ```bash
 python -m audio_overlap_removal \
@@ -80,7 +89,8 @@ python -m audio_overlap_removal \
   --strength 1
 ```
 
-如果只有混合音频的第 300–1200 秒包含参考媒体，只扫描和处理这个范围：
+If the reference can only occur between 300 and 1200 seconds in the mixture,
+limit scanning and processing to that range:
 
 ```bash
 audio-overlap-removal \
@@ -89,18 +99,21 @@ audio-overlap-removal \
   --strength 1 --workers 4
 ```
 
-`--start` 和 `--end` 是 mixture 绝对时间轴上的媒体存在范围，并不是输出
-裁剪范围。输出始终覆盖完整 mixture；范围外、范围内未发现参考匹配以及低
-置信度区间都直接通过，只有可靠匹配到的部分会被重建。
+`--start` and `--end` describe where the reference may occur on the mixture's
+absolute timeline; they do not crop the output. The output always spans the
+complete mixture. Content outside the range, unmatched content inside it, and
+low-confidence regions all pass through unchanged. Only reliable matches are
+reconstructed.
 
-输出路径必须以 `.flac` 或 `.wav` 结尾，也不能与任一输入文件相同。
+The output path must end in `.flac` or `.wav` and must differ from both input
+paths.
 
-**推荐从 `--strength 1` 开始试听。** 如果人声损伤明显，再向 `0` 调低；
-如果背景残留仍多，再尝试 `1.25–2`。
+**Start by listening at `--strength 1`.** Reduce it toward `0` if voice damage
+is noticeable. If too much background remains, try `1.25–2`.
 
-## 作为 Python 库调用
+## Python API
 
-大多数调用方只需要使用高层函数 `remove_reference()`：
+Most callers only need the high-level `remove_reference()` function:
 
 ```python
 from audio_overlap_removal import remove_reference
@@ -116,10 +129,11 @@ segments = remove_reference(
 )
 ```
 
-返回值是实际匹配到的 `AlignmentSegment` 列表。输出仍覆盖完整 mixture，
-只有这些匹配区间会被处理。
+The return value is a list of the `AlignmentSegment` objects that were actually
+matched. The output still covers the complete mixture, and only those matched
+regions are processed.
 
-如果要把扫描与处理拆开，可分别调用：
+To separate scanning from processing:
 
 ```python
 from audio_overlap_removal import process_audio, scan_reference
@@ -141,143 +155,183 @@ process_audio(
 )
 ```
 
-`scan_reference()` 只负责定位参考媒体，`process_audio()` 只处理传入的匹配
-区间。包根目录导出的名字是稳定公共接口；以下划线开头的函数属于内部实现，
-不保证跨版本兼容。
+`scan_reference()` only locates the reference; `process_audio()` only processes
+the supplied matched regions. Names exported from the package root are the
+stable public interface. Underscore-prefixed functions are internal and do not
+carry compatibility guarantees.
 
-## 常用参数
+The lower-level `fingerprint_media()`, `fingerprint_blocks()`, and
+`FingerprintIndex` interfaces are also exported. Index candidates include a
+`media_id` and a timestamp within that media, allowing multiple media files to
+be indexed in memory. The current CLI builds a single-reference index and does
+not persist a media library.
 
-| 参数 | 默认值 | 说明 |
+## Common options
+
+| Option | Default | Description |
 | --- | ---: | --- |
-| `--start SECONDS` | `0` | mixture 中可能包含参考媒体的起点 |
-| `--end SECONDS` | mixture 末尾 | mixture 中可能包含参考媒体的终点 |
-| `--chunk SECONDS` | `30` | 处理块长度 |
-| `--workers N` | `1` | 并行扫描/处理任务数 |
-| `--sample-rate HZ` | `48000` | 解码、处理和输出采样率 |
-| `--strength VALUE` | `1` | 保真与消除强度的统一控制 |
-| `--disable-adaptive-warp` | 关闭 | 禁用经验证的 16 ms 精细时间扭曲 |
+| `--start SECONDS` | `0` | Start of the range where the reference may occur |
+| `--end SECONDS` | End of mixture | End of the range where the reference may occur |
+| `--chunk SECONDS` | `30` | Processing chunk length |
+| `--workers N` | `4` | Number of parallel scanning/processing jobs |
+| `--sample-rate HZ` | `48000` | Decode, processing, and output sample rate |
+| `--strength VALUE` | `1` | Unified preservation/removal control |
+| `--disable-adaptive-warp` | Off | Disable validated 16 ms fine time warping |
 
-`--strength` 没有硬上限：
+`--strength` has no hard upper limit:
 
-| 值 | 取向 |
+| Value | Behavior |
 | ---: | --- |
-| `0` | 最保守，只做受保护的参考相消 |
-| `0–1` | 逐步增加残留和居中媒体清理 |
-| `1` | 推荐起点；在消除效果和目标声音保护之间取平衡 |
-| `1.25–2` | 更偏向媒体去除或 ASR，低语损失和失真风险更高 |
-| `>2` | 实验范围；继续增强清理，也继续增加损伤风险 |
+| `0` | Most conservative; protected reference cancellation only |
+| `0–1` | Progressively adds residual and centered-media cleanup |
+| `1` | Recommended starting point; balances removal and target protection |
+| `1.25–2` | Favors media removal or ASR, with more risk to quiet speech |
+| `>2` | Experimental; stronger cleanup with increasing damage risk |
 
-`--cleanup-strength`、`--center-strength`、
-`--center-cleanup-strength` 和 `--silence-cleanup-strength` 是专家级覆盖项。
-通常先只调整 `--strength`。
+`--cleanup-strength`, `--center-strength`, `--center-cleanup-strength`, and
+`--silence-cleanup-strength` are expert overrides. Adjust `--strength` alone
+first in most cases.
 
-## 格式与声道兼容性
+## Formats and channel layouts
 
-### 输入
+### Input
 
-程序通过 FFmpeg 解码第一个音频流，因此通常可读取：
+The first audio stream is decoded through FFmpeg, so supported inputs normally
+include:
 
-- WAV、FLAC、AIFF；
-- MP3、AAC/M4A；
-- Ogg Vorbis、Opus；
-- WebM、常见带音频的视频容器；
-- 当前 FFmpeg 构建支持的其他非 DRM 格式。
+- WAV, FLAC, and AIFF;
+- MP3 and AAC/M4A;
+- Ogg Vorbis and Opus;
+- WebM and common video containers with audio;
+- Other non-DRM formats supported by the installed FFmpeg build.
 
-采样率和采样格式会统一转换，不要求两路输入一致。损坏文件、加密/DRM
-媒体、FFmpeg 构建未包含的编解码器，以及没有音频流的文件不受支持。
-解码失败时，程序会保留 FFmpeg 的错误详情。
+Sample rates and sample formats are converted to a common representation, so
+the two inputs do not need to match. Corrupt files, encrypted or DRM-protected
+media, codecs absent from the installed FFmpeg build, and files without an
+audio stream are unsupported. Decode failures retain FFmpeg's error details.
 
-### 声道
+### Channels
 
-| 原始输入 | 内部处理与输出 |
+| Original input | Internal processing and output |
 | --- | --- |
-| mixture 为 mono | mono 处理，输出 mono |
-| mixture 为 stereo | Mid/Side 处理，输出 stereo |
-| mixture 超过 2 声道 | FFmpeg 下混为 stereo，再输出 stereo |
-| reference 为 mono | 使用 mono/Mid 参考路径 |
-| reference 为 stereo | 使用 Mid/Side 参考路径 |
-| reference 超过 2 声道 | FFmpeg 下混为 stereo 后作为参考 |
+| Mono mixture | Processed and written as mono |
+| Stereo mixture | Mid/Side processing, written as stereo |
+| Mixture with more than 2 channels | Downmixed by FFmpeg and written as stereo |
+| Mono reference | Mono/Mid reference path |
+| Stereo reference | Mid/Side reference path |
+| Reference with more than 2 channels | Downmixed by FFmpeg and used as stereo |
 
-多声道下混会丢失原始环绕布局。如果必须保留 5.1/7.1，请先自行拆分和路由
-声道；当前算法只建模 mono/stereo。
+Multichannel downmixing discards the original surround layout. If 5.1 or 7.1
+must be preserved, split and route the channels yourself; the current algorithm
+only models mono and stereo.
 
-### 输出
+### Output
 
-没有单独的 `--format` 参数；程序根据输出文件扩展名选择格式：
+There is no separate `--format` option. The output extension selects the format:
 
-- `.flac`：FLAC 容器，24-bit PCM；
-- `.wav`：WAV 容器，24-bit PCM。
+- `.flac`: FLAC container with 24-bit PCM;
+- `.wav`: WAV container with 24-bit PCM.
 
-当前不会复制输入的封面、视频、章节或其他元数据，只输出处理后的音频。
-写出期间会在输出目录创建一个隐藏的 `.part` 临时文件；成功关闭后原子替换为
-目标文件，失败时自动删除，从而避免留下半截输出。当前扫描和解码不创建其他
-磁盘临时文件。
+Cover art, video, chapters, and other input metadata are not copied. The program
+creates a hidden `.part` file in the output directory while writing, then
+atomically replaces the target after a successful close. Failed writes remove
+the partial file. Scanning and decoding do not create other temporary files on
+disk.
 
-## 工作原理
+## How it works
 
-1. **低采样率全局扫描**：在 1 kHz 音频上寻找可靠种子和候选偏移；
-2. **分段跟踪与重获取**：局部跟踪失败后限频执行全局搜索，处理暂停、跳转
-   和重放；
-3. **局部时间对齐**：用锚点构造时间扭曲，必要时验证更密集的候选路径；
-4. **Mid/Side 参考相消**：利用较少受居中主播人声影响的 Side 估计复数传递
-   函数，并结合参考 Mid 处理居中媒体；
-5. **受保护的残留清理**：检测主播声音或与参考无关的立体声内容，自动减弱
-   后级抑制；
-6. **分块写出**：按时间顺序写出并平滑块边界。
+1. **Low-rate global scan**: inputs up to four hours use full correlation
+   search to preserve established behavior; longer inputs build a compact
+   streaming fingerprint index;
+2. **Segment tracking and reacquisition**: rate-limited global searches run
+   after local tracking fails, handling pauses, seeks, and replays;
+3. **Local time alignment**: anchors define a time warp, with denser candidate
+   paths validated when needed;
+4. **Mid/Side reference cancellation**: the Side channel, which is less
+   affected by centered speech, estimates a complex transfer function while
+   the reference Mid helps process centered media;
+5. **Protected residual cleanup**: presenter speech and unrelated stereo
+   content are detected to automatically reduce later suppression;
+6. **Chunked output**: chunks are written in timeline order with smoothed
+   boundaries.
 
-更深入的能力边界和实验结论见：
+For deeper discussion of capabilities, boundaries, and experimental findings:
 
 - [`docs/algorithm-review.md`](docs/algorithm-review.md)
 - [`docs/real-world-goals.md`](docs/real-world-goals.md)
 
-## 性能建议
+## Performance guidance
 
-- 已知媒体只出现在部分时间时，务必用 `--start/--end` 缩小扫描范围；
-- 一般从 `--workers 1` 或 `2` 开始；
-- 内存充足时可尝试 `--workers 4`；
-- worker 数过高通常受内存带宽限制，并会近似按并发块数增加临时内存；
-- 输出仍会重建完整 mixture，缩小扫描范围不会缩短输出。
+- Use `--start/--end` to reduce the scan range when the reference can only occur
+  during part of the mixture;
+- Start with `--workers 1` or `2` on memory-constrained systems;
+- The default `--workers 4` is suitable when enough memory is available;
+- High worker counts are usually limited by memory bandwidth and increase
+  temporary memory roughly in proportion to concurrent chunks;
+- The complete mixture is still reconstructed, so narrowing the scan range
+  does not shorten the output.
 
-默认全局扫描仍需以低采样率解码完整参考音轨。非常长的参考媒体会增加扫描
-时间和内存，但不会以 48 kHz 原始声道布局整体载入。
+When both the mixture scan range and reference are no longer than four hours,
+the original full-correlation search is used to preserve common-case matching
+behavior. If either is longer, the program automatically switches to the
+streaming fingerprint index: FFmpeg audio blocks are piped directly into
+feature generation without retaining the complete waveform or FFT and without
+creating analysis files. At the 24-hour limit, the index and streaming windows
+remain well below the total 8 GiB budget. Four workers primarily increase
+concurrent cancellation-chunk memory; they do not create four copies of the
+index.
 
-## 测试
+## Tests
 
-运行完整回归测试：
+Run the complete regression suite:
 
 ```bash
 python -m unittest -v test_audio_overlap_removal.py
 ```
 
-测试覆盖动态增益、暂停、跳转/重放、速度漂移、mono/stereo 路由、多声道
-FFmpeg 下混、WAV/FLAC 输出选择、截断参考和并行结果顺序。
+Tests cover dynamic gain, pauses, seeks/replays, speed drift, short- and
+long-media scan strategies, streaming FFmpeg decoding, multi-media fingerprint
+IDs, mono/stereo routing, multichannel downmixing, WAV/FLAC selection, truncated
+references, and deterministic parallel output order.
 
-## 已知限制
+The long-media smoke test does not create multi-hour fixtures. Instead, a
+96-second fixture compresses continuous playback, dynamic gain/EQ, pause and
+resume, backward replay, and foreground-only regions, then forces an A/B
+comparison between the FFT and fingerprint paths. The 24-hour capacity test
+extrapolates from actual index bytes per window and asserts an upper bound.
 
-- 参考音轨必须与混合音中的目标背景同源；仅风格相似不够；
-- 强压缩、重混音、复杂动态处理或大幅变速会降低匹配和相消效果；
-- mono 路径没有安全的 Side 控制信号，因此比 stereo 更保守；
-- 两个文件都是 stereo、但背景在混入前已下混为 mono 的情况不会单独检测；
-- 与参考无关且高度居中的背景，也可能被激进清理误伤；
-- 当前只选择每个输入的第一个音频流；
-- 不保留多声道环绕布局或媒体元数据。
+## Known limitations
 
-低置信度区间会直接通过，优先避免错误相消。如果输出背景残留较多，可先确认
-参考内容和偏移正确，再逐步提高 `--strength`。
+- The reference must derive from the same source as the target background;
+  stylistic similarity is not enough;
+- Heavy compression, remixes, complex dynamics processing, or large speed
+  changes reduce matching and cancellation quality;
+- The mono path has no safe Side control signal and is therefore more
+  conservative than stereo;
+- The case where both files are stereo but the background was downmixed to
+  mono before mixing is not detected separately;
+- Aggressive cleanup may damage unrelated, strongly centered background audio;
+- Only the first audio stream from each input is selected;
+- Surround layouts and media metadata are not preserved.
 
-## 项目结构
+Low-confidence regions pass through unchanged to avoid incorrect cancellation.
+If too much background remains, first verify that the reference content and
+offset are correct, then increase `--strength` gradually.
+
+## Project structure
 
 ```text
 audio-overlap-removal/
 ├── audio_overlap_removal/
-│   ├── alignment.py       # 参考媒体扫描与时间轴匹配
-│   ├── cancellation.py    # 信号对齐、相消与残留清理
-│   ├── media.py           # FFmpeg 解码、探测和原子写出
-│   ├── models.py          # 公共数据模型与强度配置
-│   ├── parallel.py        # 有界、保序的并行执行
-│   ├── pipeline.py        # 可独立调用的高层处理流程
-│   └── cli.py             # 命令行参数与入口
-├── test_audio_overlap_removal.py  # 算法、模块接口与 I/O 回归测试
-├── pyproject.toml                 # 包配置、依赖与命令行入口
-└── docs/                          # 目标、实验结论和算法审查
+│   ├── alignment.py       # Reference scanning and timeline matching
+│   ├── cancellation.py    # Signal alignment, cancellation, and cleanup
+│   ├── fingerprint.py     # Streaming fingerprints and candidate index
+│   ├── media.py           # FFmpeg decoding, probing, and atomic output
+│   ├── models.py          # Public data models and strength profiles
+│   ├── parallel.py        # Bounded, order-preserving parallel execution
+│   ├── pipeline.py        # Independently callable high-level pipeline
+│   └── cli.py             # Command-line options and entry point
+├── test_audio_overlap_removal.py  # Algorithm, API, and I/O regressions
+├── pyproject.toml                 # Package metadata, dependencies, and CLI
+└── docs/                          # Goals, experiments, and algorithm review
 ```

@@ -7,7 +7,13 @@ import scipy.fft
 import scipy.ndimage
 import scipy.signal
 
-from .media import MIN_ALIGNMENT_SAMPLE_RATE, _decode_mono_low
+from .fingerprint import (
+    FingerprintCandidate,
+    FingerprintIndex,
+    FingerprintTrack,
+    fingerprint_media,
+)
+from .media import MIN_ALIGNMENT_SAMPLE_RATE, _decode_mono_low, _media_duration
 from .models import AlignmentSegment
 from .parallel import _bounded_ordered_map
 
@@ -66,7 +72,47 @@ class _GlobalMatcher:
         return best_index, best_score
 
 
-def discover_alignment_segments(
+def _validate_alignment_options(
+    *,
+    align_sr: int,
+    global_step_sec: float,
+    query_sec: float,
+    local_step_sec: float,
+    local_search_sec: float,
+    min_score: float,
+    reacquire_after_sec: float,
+    reacquire_interval_sec: float,
+    workers: int,
+    mixture_start_sec: float,
+    mixture_duration_sec: float | None,
+) -> None:
+    if workers < 1:
+        raise ValueError("workers must be at least 1.")
+    if align_sr < MIN_ALIGNMENT_SAMPLE_RATE:
+        raise ValueError(f"align_sr must be at least {MIN_ALIGNMENT_SAMPLE_RATE}.")
+    positive_timings = (
+        global_step_sec,
+        query_sec,
+        local_step_sec,
+        reacquire_interval_sec,
+    )
+    if any(not np.isfinite(value) or value <= 0.0 for value in positive_timings):
+        raise ValueError("alignment step and query durations must be positive.")
+    if not np.isfinite(local_search_sec) or local_search_sec < 0.0:
+        raise ValueError("local_search_sec must be non-negative.")
+    if not np.isfinite(reacquire_after_sec) or reacquire_after_sec < 0.0:
+        raise ValueError("reacquisition timings are invalid.")
+    if not np.isfinite(min_score) or not 0.0 <= min_score <= 1.0:
+        raise ValueError("min_score must be between 0 and 1.")
+    if not np.isfinite(mixture_start_sec) or mixture_start_sec < 0.0:
+        raise ValueError("mixture_start_sec must be non-negative.")
+    if mixture_duration_sec is not None and (
+        not np.isfinite(mixture_duration_sec) or mixture_duration_sec <= 0.0
+    ):
+        raise ValueError("mixture_duration_sec must be positive.")
+
+
+def _discover_full_alignment_segments(
     mixture_path: str,
     reference_path: str,
     align_sr: int = 1_000,
@@ -77,27 +123,24 @@ def discover_alignment_segments(
     min_score: float = 0.18,
     reacquire_after_sec: float = 10.0,
     reacquire_interval_sec: float = 15.0,
-    workers: int = 1,
+    workers: int = 4,
     mixture_start_sec: float = 0.0,
     mixture_duration_sec: float | None = None,
 ) -> list[AlignmentSegment]:
     """Find matching regions and recover after pauses, seeks, and replays."""
-    if workers < 1:
-        raise ValueError("workers must be at least 1.")
-    if align_sr < MIN_ALIGNMENT_SAMPLE_RATE:
-        raise ValueError(f"align_sr must be at least {MIN_ALIGNMENT_SAMPLE_RATE}.")
-    if global_step_sec <= 0.0 or query_sec <= 0.0 or local_step_sec <= 0.0:
-        raise ValueError("alignment step and query durations must be positive.")
-    if local_search_sec < 0.0:
-        raise ValueError("local_search_sec must be non-negative.")
-    if reacquire_after_sec < 0.0 or reacquire_interval_sec <= 0.0:
-        raise ValueError("reacquisition timings are invalid.")
-    if not 0.0 <= min_score <= 1.0:
-        raise ValueError("min_score must be between 0 and 1.")
-    if mixture_start_sec < 0.0:
-        raise ValueError("mixture_start_sec must be non-negative.")
-    if mixture_duration_sec is not None and mixture_duration_sec <= 0.0:
-        raise ValueError("mixture_duration_sec must be positive.")
+    _validate_alignment_options(
+        align_sr=align_sr,
+        global_step_sec=global_step_sec,
+        query_sec=query_sec,
+        local_step_sec=local_step_sec,
+        local_search_sec=local_search_sec,
+        min_score=min_score,
+        reacquire_after_sec=reacquire_after_sec,
+        reacquire_interval_sec=reacquire_interval_sec,
+        workers=workers,
+        mixture_start_sec=mixture_start_sec,
+        mixture_duration_sec=mixture_duration_sec,
+    )
     # Full-reference FFTs become memory-bandwidth-bound beyond two concurrent
     # queries on typical desktop CPUs. Keep cancellation workers independent.
     scan_workers = min(workers, 2)
@@ -233,12 +276,24 @@ def discover_alignment_segments(
                 last_match_time = mixture_time
                 prefetched_global.clear()
 
+    segments = _segments_from_anchors(
+        anchors,
+        local_step_sec=local_step_sec,
+        query_sec=query_sec,
+    )
+    _print_alignment_segments(segments)
+    return segments
+
+
+def _segments_from_anchors(
+    anchors: list[tuple[float, float, float]],
+    *,
+    local_step_sec: float,
+    query_sec: float,
+) -> list[AlignmentSegment]:
+    """Convert timestamp/offset/score anchors into stable matched regions."""
     if not anchors:
         return []
-
-    # First split no-match gaps, then split stable regions at real timestamp
-    # discontinuities. Median filtering prevents one bad anchor from creating a
-    # false segment boundary.
     gap_limit = max(3.0 * local_step_sec, query_sec + local_step_sec)
     groups: list[list[tuple[float, float, float]]] = []
     current = [anchors[0]]
@@ -309,6 +364,10 @@ def discover_alignment_segments(
                 )
             )
 
+    return segments
+
+
+def _print_alignment_segments(segments: list[AlignmentSegment]) -> None:
     for segment in segments:
         print(
             f"  match C={segment.mixture_start:.1f}-"
@@ -317,7 +376,276 @@ def discover_alignment_segments(
             f"speed={(1.0 - segment.offset_slope):.6f}x "
             f"median-score={segment.median_score:.3f}"
         )
+
+
+def _sequence_global_match(
+    mixture_track: FingerprintTrack,
+    reference_track: FingerprintTrack,
+    index: FingerprintIndex,
+    mixture_time: float,
+    query_sec: float,
+) -> FingerprintCandidate | None:
+    feature = mixture_track.feature_near(mixture_time)
+    if feature is None:
+        return None
+    candidates = index.query(feature, candidates=24)
+    reranked: list[FingerprintCandidate] = []
+    for candidate in candidates:
+        scores: list[float] = []
+        for delta in (0.0, query_sec, 2.0 * query_sec):
+            mixture_feature = mixture_track.feature_near(mixture_time + delta)
+            reference_feature = reference_track.feature_near(candidate.time_sec + delta)
+            if mixture_feature is not None and reference_feature is not None:
+                scores.append(float(mixture_feature @ reference_feature))
+        if scores:
+            reranked.append(
+                FingerprintCandidate(
+                    media_id=candidate.media_id,
+                    time_sec=candidate.time_sec,
+                    score=float(min(scores[0], np.mean(scores))),
+                )
+            )
+    return (
+        min(
+            reranked,
+            key=lambda match: (-match.score, match.media_id, match.time_sec),
+        )
+        if reranked
+        else None
+    )
+
+
+def _discover_indexed_alignment_segments(
+    mixture_path: str,
+    reference_path: str,
+    *,
+    align_sr: int,
+    global_step_sec: float,
+    query_sec: float,
+    local_step_sec: float,
+    local_search_sec: float,
+    min_score: float,
+    reacquire_after_sec: float,
+    reacquire_interval_sec: float,
+    workers: int,
+    mixture_start_sec: float,
+    mixture_duration_sec: float | None,
+) -> list[AlignmentSegment]:
+    """Discover long-media matches from streamed compact fingerprints."""
+    scan_workers = min(workers, 2)
+    print(
+        f"Scanning long-media alignment at {align_sr} Hz "
+        f"(fingerprint index, workers={scan_workers})..."
+    )
+    decoded_mixture_duration = (
+        mixture_duration_sec + query_sec if mixture_duration_sec is not None else None
+    )
+    jobs = (
+        (
+            reference_path,
+            "reference",
+            0.0,
+            None,
+        ),
+        (
+            mixture_path,
+            "mixture",
+            mixture_start_sec,
+            decoded_mixture_duration,
+        ),
+    )
+    reference_track, mixture_track = _bounded_ordered_map(
+        lambda job: fingerprint_media(
+            job[0],
+            job[1],
+            sr=align_sr,
+            start_sec=job[2],
+            duration_sec=job[3],
+            query_sec=query_sec,
+        ),
+        jobs,
+        scan_workers,
+    )
+    if not len(reference_track.times) or not len(mixture_track.times):
+        return []
+    index = FingerprintIndex([reference_track])
+    print(
+        f"  indexed {len(reference_track.times):,} reference windows "
+        f"({index.memory_bytes / (1024 * 1024):.1f} MiB compact arrays)"
+    )
+
+    global_threshold = max(0.55, 0.45 + 0.25 * min_score)
+    local_threshold = max(0.40, 0.30 + 0.25 * min_score)
+    first_mixture_time = float(mixture_track.times[0])
+    last_mixture_time = float(mixture_track.times[-1])
+    available_span = last_mixture_time - first_mixture_time
+
+    seed: tuple[float, float, float] | None = None
+    for relative_time in np.arange(0.0, available_span + 1e-9, global_step_sec):
+        mixture_time = first_mixture_time + float(relative_time)
+        candidate = _sequence_global_match(
+            mixture_track,
+            reference_track,
+            index,
+            mixture_time,
+            query_sec,
+        )
+        if candidate is not None and candidate.score >= global_threshold:
+            seed = (mixture_time, candidate.time_sec, candidate.score)
+            break
+    if seed is None:
+        return []
+
+    seed_offset = seed[0] - seed[1]
+    print(
+        f"  seed C={seed[0]:.1f}s B={seed[1]:.3f}s "
+        f"offset={seed_offset:.3f}s score={seed[2]:.3f}"
+    )
+    earliest_relative = max(
+        0.0,
+        seed_offset
+        - mixture_start_sec
+        - max(local_search_sec, reference_track.hop_sec),
+    )
+    first_local_relative = np.ceil(earliest_relative / local_step_sec) * local_step_sec
+    local_times = np.arange(
+        first_mixture_time + first_local_relative,
+        last_mixture_time + 1e-9,
+        local_step_sec,
+    )
+    anchors: list[tuple[float, float, float]] = []
+    tracked_offset = seed_offset
+    last_match_time = seed[0]
+    last_reacquire_time = seed[0] - reacquire_interval_sec
+    local_radius = max(local_search_sec, 1.1 * reference_track.hop_sec)
+
+    for mixture_time_value in local_times:
+        mixture_time = float(mixture_time_value)
+        feature = mixture_track.feature_near(mixture_time)
+        if feature is None:
+            continue
+        predicted_reference = mixture_time - tracked_offset
+        local = index.best_near(
+            "reference",
+            feature,
+            predicted_reference,
+            local_radius,
+        )
+        if local is not None and local.score >= local_threshold:
+            tracked_offset = mixture_time - local.time_sec
+            anchors.append((mixture_time, tracked_offset, local.score))
+            last_match_time = mixture_time
+            continue
+
+        should_reacquire = (
+            mixture_time - last_match_time >= reacquire_after_sec
+            and mixture_time - last_reacquire_time >= reacquire_interval_sec
+        )
+        if not should_reacquire:
+            continue
+        last_reacquire_time = mixture_time
+        candidate = _sequence_global_match(
+            mixture_track,
+            reference_track,
+            index,
+            mixture_time,
+            query_sec,
+        )
+        if candidate is not None and candidate.score >= global_threshold:
+            tracked_offset = mixture_time - candidate.time_sec
+            anchors.append((mixture_time, tracked_offset, candidate.score))
+            last_match_time = mixture_time
+
+    segments = _segments_from_anchors(
+        anchors,
+        local_step_sec=local_step_sec,
+        query_sec=query_sec,
+    )
+    _print_alignment_segments(segments)
     return segments
+
+
+def discover_alignment_segments(
+    mixture_path: str,
+    reference_path: str,
+    align_sr: int = 1_000,
+    global_step_sec: float = 60.0,
+    query_sec: float = 8.0,
+    local_step_sec: float = 5.0,
+    local_search_sec: float = 0.25,
+    min_score: float = 0.18,
+    reacquire_after_sec: float = 10.0,
+    reacquire_interval_sec: float = 15.0,
+    workers: int = 4,
+    mixture_start_sec: float = 0.0,
+    mixture_duration_sec: float | None = None,
+    reference_duration_sec: float | None = None,
+    max_in_memory_sec: float = 4.0 * 60.0 * 60.0,
+) -> list[AlignmentSegment]:
+    """Find matching regions and recover after pauses, seeks, and replays."""
+    _validate_alignment_options(
+        align_sr=align_sr,
+        global_step_sec=global_step_sec,
+        query_sec=query_sec,
+        local_step_sec=local_step_sec,
+        local_search_sec=local_search_sec,
+        min_score=min_score,
+        reacquire_after_sec=reacquire_after_sec,
+        reacquire_interval_sec=reacquire_interval_sec,
+        workers=workers,
+        mixture_start_sec=mixture_start_sec,
+        mixture_duration_sec=mixture_duration_sec,
+    )
+    if not np.isfinite(max_in_memory_sec) or max_in_memory_sec < 0.0:
+        raise ValueError("max_in_memory_sec must be non-negative and finite.")
+    if reference_duration_sec is not None and (
+        not np.isfinite(reference_duration_sec) or reference_duration_sec <= 0.0
+    ):
+        raise ValueError("reference_duration_sec must be positive and finite.")
+    if reference_duration_sec is None:
+        try:
+            reference_duration_sec = _media_duration(reference_path)
+        except FileNotFoundError:
+            # Synthetic/custom decoders may not refer to filesystem media.
+            # The caller can pass a duration to select the indexed strategy.
+            pass
+    use_index = (
+        mixture_duration_sec is not None and mixture_duration_sec > max_in_memory_sec
+    ) or (
+        reference_duration_sec is not None
+        and reference_duration_sec > max_in_memory_sec
+    )
+    if use_index:
+        return _discover_indexed_alignment_segments(
+            mixture_path,
+            reference_path,
+            align_sr=align_sr,
+            global_step_sec=global_step_sec,
+            query_sec=query_sec,
+            local_step_sec=local_step_sec,
+            local_search_sec=local_search_sec,
+            min_score=min_score,
+            reacquire_after_sec=reacquire_after_sec,
+            reacquire_interval_sec=reacquire_interval_sec,
+            workers=workers,
+            mixture_start_sec=mixture_start_sec,
+            mixture_duration_sec=mixture_duration_sec,
+        )
+    return _discover_full_alignment_segments(
+        mixture_path,
+        reference_path,
+        align_sr=align_sr,
+        global_step_sec=global_step_sec,
+        query_sec=query_sec,
+        local_step_sec=local_step_sec,
+        local_search_sec=local_search_sec,
+        min_score=min_score,
+        reacquire_after_sec=reacquire_after_sec,
+        reacquire_interval_sec=reacquire_interval_sec,
+        workers=workers,
+        mixture_start_sec=mixture_start_sec,
+        mixture_duration_sec=mixture_duration_sec,
+    )
 
 
 def _normalized_match(search: np.ndarray, query: np.ndarray) -> tuple[int, float]:

@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -15,6 +17,7 @@ import soundfile as sf
 DEFAULT_SR = 48_000
 MIN_SAMPLE_RATE = 1_000
 MIN_ALIGNMENT_SAMPLE_RATE = 200
+MAX_MEDIA_DURATION_SEC = 24.0 * 60.0 * 60.0
 _OUTPUT_FORMATS = {
     ".flac": ("FLAC", "PCM_24"),
     ".wav": ("WAV", "PCM_24"),
@@ -171,14 +174,38 @@ def _decode_mono_low(
     start_sec: float = 0.0,
     duration_sec: float | None = None,
 ) -> np.ndarray:
+    blocks = list(
+        _iter_decode_mono_low(
+            path,
+            sr,
+            start_sec=start_sec,
+            duration_sec=duration_sec,
+        )
+    )
+    return np.concatenate(blocks) if blocks else np.empty(0, dtype=np.float32)
+
+
+def _iter_decode_mono_low(
+    path: str,
+    sr: int,
+    start_sec: float = 0.0,
+    duration_sec: float | None = None,
+    *,
+    block_frames: int = 65_536,
+) -> Iterator[np.ndarray]:
+    """Yield mono float32 blocks directly from FFmpeg's stdout pipe."""
     if sr < MIN_ALIGNMENT_SAMPLE_RATE:
         raise ValueError(
             f"decode sample rate must be at least {MIN_ALIGNMENT_SAMPLE_RATE} Hz."
         )
-    if start_sec < 0.0:
-        raise ValueError("decode start must be non-negative.")
-    if duration_sec is not None and duration_sec <= 0.0:
-        raise ValueError("decode duration must be positive.")
+    if not np.isfinite(start_sec) or start_sec < 0.0:
+        raise ValueError("decode start must be non-negative and finite.")
+    if duration_sec is not None and (
+        not np.isfinite(duration_sec) or duration_sec <= 0.0
+    ):
+        raise ValueError("decode duration must be positive and finite.")
+    if block_frames < 1:
+        raise ValueError("block_frames must be positive.")
     command = [
         "ffmpeg",
         "-nostdin",
@@ -209,8 +236,65 @@ def _decode_mono_low(
             "pipe:1",
         ]
     )
-    result = _run_media_command(command)
-    return np.frombuffer(result.stdout, dtype="<f4").copy()
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(
+            "ffmpeg was not found. Install FFmpeg and ensure both ffmpeg "
+            "and ffprobe are available on PATH."
+        ) from error
+
+    stderr_tail = bytearray()
+
+    def drain_stderr() -> None:
+        if process.stderr is None:
+            return
+        while chunk := process.stderr.read(8_192):
+            stderr_tail.extend(chunk)
+            if len(stderr_tail) > 65_536:
+                del stderr_tail[:-65_536]
+
+    stderr_thread = threading.Thread(
+        target=drain_stderr,
+        name="ffmpeg-stderr",
+        daemon=True,
+    )
+    stderr_thread.start()
+    try:
+        if process.stdout is None or process.stderr is None:
+            raise RuntimeError("Could not open FFmpeg streaming pipes.")
+        sample_bytes = np.dtype("<f4").itemsize
+        byte_count = block_frames * sample_bytes
+        carry = b""
+        while block := process.stdout.read(byte_count):
+            block = carry + block
+            usable = len(block) - len(block) % sample_bytes
+            if usable:
+                yield np.frombuffer(block[:usable], dtype="<f4").copy()
+            carry = block[usable:]
+        if carry:
+            raise RuntimeError("FFmpeg returned a truncated float32 sample.")
+        return_code = process.wait()
+        stderr_thread.join()
+        if return_code:
+            stderr = stderr_tail.decode(errors="replace").strip()
+            message = f"ffmpeg failed with exit code {return_code}"
+            if stderr:
+                message += f": {stderr}"
+            raise RuntimeError(message)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        stderr_thread.join()
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
 
 
 def _decode_stereo(
