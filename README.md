@@ -69,13 +69,15 @@ ffprobe -version
 自动扫描并处理完整混合音频：
 
 ```bash
-audio-overlap-removal mixture.webm reference.webm clean.flac
+audio-overlap-removal mixture.webm reference.webm clean.flac --strength 1
 ```
 
 不安装命令行入口也可以直接运行：
 
 ```bash
-python real_reference_cancel.py mixture.webm reference.webm clean.flac
+python real_reference_cancel.py \
+  mixture.webm reference.webm clean.flac \
+  --strength 1
 ```
 
 只处理混合音频从第 300 秒开始的 15 分钟：
@@ -94,10 +96,14 @@ audio-overlap-removal \
 audio-overlap-removal \
   mixture.webm reference.webm clean.wav \
   --offset 81.533 \
-  --start 600 --duration 120
+  --start 600 --duration 120 \
+  --strength 1
 ```
 
 输出路径必须以 `.flac` 或 `.wav` 结尾，也不能与任一输入文件相同。
+
+**推荐从 `--strength 1` 开始试听。** 如果人声损伤明显，再向 `0` 调低；
+如果背景残留仍多，再尝试 `1.25–2`。
 
 ## 常用参数
 
@@ -109,7 +115,7 @@ audio-overlap-removal \
 | `--chunk SECONDS` | `30` | 处理块长度 |
 | `--workers N` | `1` | 并行扫描/处理任务数 |
 | `--sample-rate HZ` | `48000` | 解码、处理和输出采样率 |
-| `--strength VALUE` | `0` | 保真与消除强度的统一控制 |
+| `--strength VALUE` | `0`（推荐显式传入 `1`） | 保真与消除强度的统一控制 |
 | `--disable-adaptive-warp` | 关闭 | 禁用经验证的 16 ms 精细时间扭曲 |
 
 `--strength` 没有硬上限：
@@ -118,7 +124,7 @@ audio-overlap-removal \
 | ---: | --- |
 | `0` | 最保守，只做受保护的参考相消 |
 | `0–1` | 逐步增加残留和居中媒体清理 |
-| `1` | 较激进，适合背景仍明显的素材 |
+| `1` | 推荐起点；在消除效果和目标声音保护之间取平衡 |
 | `1.25–2` | 更偏向媒体去除或 ASR，低语损失和失真风险更高 |
 | `>2` | 实验范围；继续增强清理，也继续增加损伤风险 |
 
@@ -202,18 +208,6 @@ python -m unittest -v test_real_reference_cancel.py
 测试覆盖动态增益、暂停、跳转/重放、速度漂移、mono/stereo 路由、多声道
 FFmpeg 下混、WAV/FLAC 输出选择、截断参考和并行结果顺序。
 
-真实媒体和历史输出体积较大，不包含在此独立项目中。若要运行旧的素材生成
-脚本，请把本地文件放到：
-
-```text
-extra-asset/
-├── miyako.webm
-├── sr.webm
-└── ya.mp3
-```
-
-这些目录已被 `.gitignore` 排除。
-
 ## 已知限制
 
 - 参考音轨必须与混合音中的目标背景同源；仅风格相似不够；
@@ -234,16 +228,5 @@ audio-overlap-removal/
 ├── real_reference_cancel.py       # 当前推荐实现和 CLI
 ├── test_real_reference_cancel.py  # 算法与 I/O 回归测试
 ├── pyproject.toml                 # 依赖与命令行入口
-├── docs/                          # 目标、实验结论和算法审查
-├── main.py                        # 旧 mono 频谱实验
-├── evaluate.py                    # 旧合成评估
-├── generate_tests.py              # 旧素材生成脚本
-├── run_tests.py                   # 旧生成/评估入口
-└── scratch/                       # 历史分析脚本
-```
-
-旧实验脚本依赖 `librosa`，分析脚本还需要 `matplotlib`。仅在需要它们时安装：
-
-```bash
-python -m pip install -e ".[legacy]"
+└── docs/                          # 目标、实验结论和算法审查
 ```

@@ -14,12 +14,6 @@ dependencies = [
     "soundfile>=0.12",
 ]
 
-[project.optional-dependencies]
-legacy = [
-    "librosa>=0.10",
-    "matplotlib>=3.7",
-]
-
 [project.scripts]
 audio-overlap-removal = "real_reference_cancel:main"
 
