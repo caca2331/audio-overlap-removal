@@ -1,0 +1,910 @@
+import shutil
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+import scipy.signal
+import soundfile as sf
+
+from real_reference_cancel import (
+    _align_reference,
+    _atomic_soundfile,
+    _audio_channel_count,
+    _best_scaled_match,
+    _bounded_ordered_map,
+    _cancel_chunk,
+    _complex_reference_cancel,
+    _decode_stereo,
+    _estimate_complex_transfer,
+    _estimate_gain_envelope,
+    _GlobalMatcher,
+    _output_settings,
+    _paths_refer_to_same_file,
+    _processing_channel_count,
+    cancellation_profile,
+    discover_alignment_segments,
+    process_range,
+)
+
+
+class RealReferenceCancelTests(unittest.TestCase):
+    def test_atomic_output_preserves_existing_file_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory, "clean.wav")
+            output.write_bytes(b"original")
+
+            with self.assertRaisesRegex(RuntimeError, "synthetic failure"):
+                with _atomic_soundfile(
+                    output,
+                    samplerate=8_000,
+                    channels=1,
+                    format="WAV",
+                    subtype="PCM_24",
+                ) as sink:
+                    sink.write(np.zeros(100, dtype=np.float32))
+                    raise RuntimeError("synthetic failure")
+
+            self.assertEqual(output.read_bytes(), b"original")
+            self.assertEqual(list(Path(directory).glob("*.part")), [])
+
+    def test_output_format_follows_extension(self) -> None:
+        self.assertEqual(_output_settings(Path("clean.FLAC")), ("FLAC", "PCM_24"))
+        self.assertEqual(_output_settings(Path("clean.wav")), ("WAV", "PCM_24"))
+        with self.assertRaisesRegex(ValueError, "Unsupported output extension"):
+            _output_settings(Path("clean.mp3"))
+
+    def test_equivalent_paths_are_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory, "input.wav")
+            media.touch()
+            equivalent = Path(directory, ".", "input.wav")
+            self.assertTrue(_paths_refer_to_same_file(media, equivalent))
+
+    def test_process_range_rejects_an_input_as_output(self) -> None:
+        with self.assertRaisesRegex(ValueError, "mixture input"):
+            process_range(
+                "mixture.wav",
+                "reference.wav",
+                "mixture.wav",
+                start_sec=0.0,
+                duration_sec=1.0,
+                offset_sec=0.0,
+            )
+
+    def test_process_range_validates_time_and_chunk_options(self) -> None:
+        cases = (
+            {"start_sec": -1.0, "duration_sec": 1.0, "chunk_sec": 1.0},
+            {"start_sec": 0.0, "duration_sec": 0.0, "chunk_sec": 1.0},
+            {"start_sec": 0.0, "duration_sec": 1.0, "chunk_sec": 0.0},
+        )
+        for options in cases:
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                process_range(
+                    "mixture.wav",
+                    "reference.wav",
+                    "output.flac",
+                    offset_sec=0.0,
+                    **options,
+                )
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"),
+        "FFmpeg is required for the decode integration test.",
+    )
+    def test_ffmpeg_decode_accepts_multichannel_input(self) -> None:
+        sr = 8_000
+        frames = sr // 4
+        time_axis = np.arange(frames, dtype=np.float32) / sr
+        channels = np.column_stack(
+            [
+                0.05 * np.sin(2 * np.pi * frequency * time_axis)
+                for frequency in (110, 220, 330, 440, 550, 660)
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "surround.wav")
+            sf.write(source, channels, sr)
+
+            self.assertEqual(_audio_channel_count(str(source)), 6)
+            self.assertEqual(_processing_channel_count(6), 2)
+            decoded = _decode_stereo(str(source), 0.0, frames / sr, sr)
+
+        self.assertEqual(decoded.ndim, 2)
+        self.assertEqual(decoded.shape[1], 2)
+        self.assertGreaterEqual(len(decoded), frames - 1)
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"),
+        "FFmpeg is required for the output integration test.",
+    )
+    def test_wav_output_is_really_wav_and_preserves_mono(self) -> None:
+        sr = 8_000
+        frames = sr // 4
+        time_axis = np.arange(frames, dtype=np.float32) / sr
+        audio = 0.1 * np.sin(2 * np.pi * 220 * time_axis)
+        with tempfile.TemporaryDirectory() as directory:
+            mixture = Path(directory, "mixture.wav")
+            reference = Path(directory, "reference.wav")
+            output = Path(directory, "clean.wav")
+            sf.write(mixture, audio, sr)
+            sf.write(reference, audio, sr)
+
+            process_range(
+                str(mixture),
+                str(reference),
+                str(output),
+                start_sec=0.0,
+                duration_sec=frames / sr,
+                alignment_segments=[],
+                chunk_sec=frames / sr,
+                sr=sr,
+            )
+            info = sf.info(output)
+
+        self.assertEqual(info.format, "WAV")
+        self.assertEqual(info.channels, 1)
+
+    def test_bounded_parallel_map_runs_concurrently_in_input_order(
+        self,
+    ) -> None:
+        barrier = threading.Barrier(3)
+
+        def work(value: int) -> int:
+            barrier.wait(timeout=2.0)
+            return value * value
+
+        output = list(_bounded_ordered_map(work, [3, 2, 1], workers=3))
+
+        self.assertEqual(output, [9, 4, 1])
+
+    def test_global_matcher_reuses_reference_without_changing_result(
+        self,
+    ) -> None:
+        rng = np.random.default_rng(7)
+        reference = rng.standard_normal(12_000).astype(np.float32)
+        query = reference[4_321:5_321] + (0.02 * rng.standard_normal(1_000)).astype(
+            np.float32
+        )
+
+        expected_index, expected_score = _best_scaled_match(reference, query)
+        matcher = _GlobalMatcher(reference, max_query_frames=1_010)
+        actual_index, actual_score = matcher.best_scaled_match(query)
+
+        self.assertEqual(actual_index, expected_index)
+        self.assertAlmostEqual(actual_score, expected_score, places=10)
+
+    def test_strength_profile_has_stable_landmarks_and_open_upper_range(
+        self,
+    ) -> None:
+        conservative = cancellation_profile(0.0)
+        v8 = cancellation_profile(1.0)
+        beyond_v9 = cancellation_profile(2.5)
+
+        self.assertEqual(conservative.cleanup_strength, 0.0)
+        self.assertEqual(conservative.center_strength, 0.5)
+        self.assertEqual(v8.cleanup_strength, 1.0)
+        self.assertEqual(v8.center_strength, 1.0)
+        self.assertEqual(v8.center_cleanup_strength, 1.0)
+        self.assertEqual(beyond_v9.cleanup_strength, 1.0)
+        self.assertEqual(beyond_v9.center_cleanup_strength, 2.5)
+        with self.assertRaises(ValueError):
+            cancellation_profile(-0.01)
+
+    def test_gain_envelope_detects_pause_instead_of_interpolating_it(
+        self,
+    ) -> None:
+        sr = 8_000
+        frames = 4 * sr
+        rng = np.random.default_rng(101)
+        reference = scipy.signal.lfilter(
+            [1.0], [1.0, -0.85], rng.standard_normal(frames)
+        ).astype(np.float32)
+        gain = np.full(frames, 0.7, dtype=np.float32)
+        gain[sr : 2 * sr] = 0.0
+        mixture = gain * reference
+
+        estimated, _ = _estimate_gain_envelope(mixture, reference, sr)
+
+        self.assertGreater(float(np.median(estimated[: sr // 2])), 0.65)
+        self.assertLess(
+            float(np.median(estimated[int(1.2 * sr) : int(1.8 * sr)])),
+            0.02,
+        )
+        self.assertGreater(float(np.median(estimated[3 * sr :])), 0.65)
+
+    def test_local_time_warp_tracks_small_speed_jitter(self) -> None:
+        sr = 8_000
+        frames = 6 * sr
+        pad = sr // 2
+        rng = np.random.default_rng(202)
+        reference = scipy.signal.lfilter(
+            [1.0],
+            [1.0, -0.88],
+            rng.standard_normal((frames + 2 * pad + 128, 2)),
+            axis=0,
+        ).astype(np.float32)
+        sample = np.arange(frames, dtype=np.float64)
+        source_positions = (
+            pad
+            + sample
+            + 0.0006 * sample
+            + 3.0 * np.sin(2 * np.pi * sample / (2.5 * sr))
+        )
+        axis = np.arange(len(reference), dtype=np.float64)
+        warped = np.column_stack(
+            [
+                np.interp(source_positions, axis, reference[:, channel])
+                for channel in range(2)
+            ]
+        ).astype(np.float32)
+        foreground = (0.02 * np.sin(2 * np.pi * 190 * sample / sr)).astype(np.float32)
+        mixture = warped + foreground[:, np.newaxis]
+
+        aligned, score, _ = _align_reference(mixture, reference, sr)
+        relative_error = np.sqrt(np.mean((aligned - warped) ** 2) / np.mean(warped**2))
+
+        self.assertGreater(score, 0.7)
+        self.assertLess(relative_error, 0.12)
+
+    def test_adaptive_short_anchors_improve_steady_rate_drift(self) -> None:
+        sr = 8_000
+        frames = 8 * sr
+        pad = sr // 2
+        rng = np.random.default_rng(212)
+        reference = scipy.signal.lfilter(
+            [1.0],
+            [1.0, -0.88],
+            rng.standard_normal((frames + 2 * pad + 512, 2)),
+            axis=0,
+        ).astype(np.float32)
+        sample = np.arange(frames, dtype=np.float64)
+        source_positions = pad + 1.005 * sample
+        axis = np.arange(len(reference), dtype=np.float64)
+        warped = np.column_stack(
+            [
+                np.interp(source_positions, axis, reference[:, channel])
+                for channel in range(2)
+            ]
+        ).astype(np.float32)
+        foreground = (
+            0.04
+            * scipy.signal.lfilter([1.0], [1.0, -0.70], rng.standard_normal(frames))
+        ).astype(np.float32)
+        diagnostics: dict[str, float] = {}
+
+        aligned, _, _ = _align_reference(
+            warped + foreground[:, np.newaxis],
+            reference,
+            sr,
+            diagnostics,
+        )
+        long_aligned, _, _ = _align_reference(
+            warped + foreground[:, np.newaxis],
+            reference,
+            sr,
+            adaptive_time_warp=False,
+        )
+        relative_error = np.sqrt(np.mean((aligned - warped) ** 2) / np.mean(warped**2))
+        long_error = np.sqrt(np.mean((long_aligned - warped) ** 2) / np.mean(warped**2))
+
+        self.assertEqual(diagnostics["short_warp_considered"], 1.0)
+        self.assertEqual(diagnostics["short_warp_accepted"], 1.0)
+        self.assertLess(relative_error, 0.06)
+        self.assertLess(relative_error, 0.4 * long_error)
+
+    def test_adaptive_short_anchors_bound_fast_jitter(self) -> None:
+        sr = 8_000
+        frames = 8 * sr
+        pad = sr // 2
+        rng = np.random.default_rng(213)
+        reference = scipy.signal.lfilter(
+            [1.0],
+            [1.0, -0.88],
+            rng.standard_normal((frames + 2 * pad + 512, 2)),
+            axis=0,
+        ).astype(np.float32)
+        sample = np.arange(frames, dtype=np.float64)
+        source_positions = (
+            pad + 1.0006 * sample + 3.0 * np.sin(2 * np.pi * sample / (0.25 * sr))
+        )
+        axis = np.arange(len(reference), dtype=np.float64)
+        warped = np.column_stack(
+            [
+                np.interp(source_positions, axis, reference[:, channel])
+                for channel in range(2)
+            ]
+        ).astype(np.float32)
+        foreground = (
+            0.04
+            * scipy.signal.lfilter([1.0], [1.0, -0.70], rng.standard_normal(frames))
+        ).astype(np.float32)
+        diagnostics: dict[str, float] = {}
+
+        aligned, _, _ = _align_reference(
+            warped + foreground[:, np.newaxis],
+            reference,
+            sr,
+            diagnostics,
+        )
+        relative_error = np.sqrt(np.mean((aligned - warped) ** 2) / np.mean(warped**2))
+
+        self.assertEqual(diagnostics["short_warp_considered"], 1.0)
+        self.assertEqual(diagnostics["short_warp_accepted"], 1.0)
+        self.assertLess(relative_error, 0.15)
+
+        extreme_positions = (
+            pad + 1.0006 * sample + 30.0 * np.sin(2 * np.pi * sample / (0.25 * sr))
+        )
+        extreme = np.column_stack(
+            [
+                np.interp(extreme_positions, axis, reference[:, channel])
+                for channel in range(2)
+            ]
+        ).astype(np.float32)
+        extreme_diagnostics: dict[str, float] = {}
+        _align_reference(
+            extreme + foreground[:, np.newaxis],
+            reference,
+            sr,
+            extreme_diagnostics,
+        )
+        self.assertEqual(extreme_diagnostics["short_warp_accepted"], 0.0)
+
+    def test_segment_discovery_reacquires_after_pause_and_replay(
+        self,
+    ) -> None:
+        sr = 500
+        rng = np.random.default_rng(303)
+        # The mixture is deliberately longer than the reference so replay
+        # recovery cannot rely on the initial offset-derived end time.
+        reference = rng.standard_normal(12 * sr).astype(np.float32)
+        mixture = (0.01 * rng.standard_normal(24 * sr)).astype(np.float32)
+
+        def copy_region(
+            mixture_start: float,
+            mixture_end: float,
+            reference_start: float,
+        ) -> None:
+            count = int(round((mixture_end - mixture_start) * sr))
+            mix_start = int(round(mixture_start * sr))
+            ref_start = int(round(reference_start * sr))
+            mixture[mix_start : mix_start + count] += reference[
+                ref_start : ref_start + count
+            ]
+
+        copy_region(2.0, 8.0, 0.0)
+        copy_region(10.0, 16.0, 6.0)
+        copy_region(16.0, 22.0, 2.0)
+
+        def decode(
+            path: str,
+            requested_sr: int,
+            start_sec: float,
+            duration_sec: float | None,
+        ) -> np.ndarray:
+            self.assertEqual(requested_sr, sr)
+            self.assertEqual(start_sec, 0.0)
+            self.assertIsNone(duration_sec)
+            return mixture.copy() if path == "mixture" else reference.copy()
+
+        def discover(workers: int):
+            with patch(
+                "real_reference_cancel._decode_mono_low",
+                side_effect=decode,
+            ):
+                return discover_alignment_segments(
+                    "mixture",
+                    "reference",
+                    align_sr=sr,
+                    global_step_sec=1.0,
+                    query_sec=1.0,
+                    local_step_sec=0.5,
+                    local_search_sec=0.10,
+                    min_score=0.50,
+                    reacquire_after_sec=0.5,
+                    reacquire_interval_sec=0.5,
+                    workers=workers,
+                )
+
+        segments = discover(1)
+        parallel_segments = discover(4)
+
+        offsets = [segment.offset_sec for segment in segments]
+        self.assertTrue(any(abs(value - 2.0) < 0.15 for value in offsets))
+        self.assertTrue(any(abs(value - 4.0) < 0.15 for value in offsets))
+        self.assertTrue(any(abs(value - 14.0) < 0.15 for value in offsets))
+        self.assertEqual(parallel_segments, segments)
+
+    def test_segment_discovery_preserves_absolute_scan_timestamps(
+        self,
+    ) -> None:
+        sr = 500
+        rng = np.random.default_rng(304)
+        reference = rng.standard_normal(8 * sr).astype(np.float32)
+        mixture = reference.copy()
+
+        def decode(
+            path: str,
+            requested_sr: int,
+            start_sec: float,
+            duration_sec: float | None,
+        ) -> np.ndarray:
+            self.assertEqual(requested_sr, sr)
+            if path == "mixture":
+                self.assertEqual(start_sec, 100.0)
+                self.assertEqual(duration_sec, 9.0)
+                return mixture.copy()
+            self.assertEqual(start_sec, 0.0)
+            self.assertIsNone(duration_sec)
+            return reference.copy()
+
+        with patch(
+            "real_reference_cancel._decode_mono_low",
+            side_effect=decode,
+        ):
+            segments = discover_alignment_segments(
+                "mixture",
+                "reference",
+                align_sr=sr,
+                global_step_sec=1.0,
+                query_sec=1.0,
+                local_step_sec=0.5,
+                min_score=0.5,
+                mixture_start_sec=100.0,
+                mixture_duration_sec=8.0,
+                workers=2,
+            )
+
+        self.assertTrue(segments)
+        self.assertGreaterEqual(segments[0].mixture_start, 100.0)
+        self.assertAlmostEqual(segments[0].offset_sec, 100.0, places=2)
+
+    def test_small_balance_and_volume_changes_preserve_center_target(
+        self,
+    ) -> None:
+        sr = 8_000
+        frames = 4 * sr
+        time = np.arange(frames) / sr
+        rng = np.random.default_rng(404)
+        reference_mid = scipy.signal.lfilter(
+            [1.0], [1.0, -0.90], rng.standard_normal(frames)
+        ).astype(np.float32)
+        reference_mid *= 0.30 / np.std(reference_mid)
+        reference_side = scipy.signal.lfilter(
+            [1.0], [1.0, -0.75], rng.standard_normal(frames)
+        ).astype(np.float32)
+        reference_side *= 0.12 / np.std(reference_side)
+        reference = np.column_stack(
+            [
+                reference_mid + reference_side,
+                reference_mid - reference_side,
+            ]
+        ).astype(np.float32)
+        target = (
+            0.15
+            * np.sin(2 * np.pi * (160 + 10 * np.sin(2 * np.pi * 0.2 * time)) * time)
+        ).astype(np.float32)
+        common_gain = 0.65 * (1.0 + 0.05 * np.sin(2 * np.pi * 0.4 * time))
+        balance = 0.04 * np.sin(2 * np.pi * 0.23 * time)
+        left_gain = common_gain * (1.0 + balance)
+        right_gain = common_gain * (1.0 - balance)
+        mixture = np.column_stack(
+            [
+                target + left_gain * reference[:, 0],
+                target + right_gain * reference[:, 1],
+            ]
+        ).astype(np.float32)
+        pad = np.zeros((sr // 4, 2), dtype=np.float32)
+
+        output, diagnostics = _cancel_chunk(
+            mixture,
+            np.vstack([pad, reference, pad]),
+            sr,
+            cleanup_strength=0.0,
+        )
+        relative_error = np.sqrt(np.mean((output - target) ** 2) / np.mean(target**2))
+
+        self.assertGreater(diagnostics["alignment_score"], 0.9)
+        self.assertLess(relative_error, 0.05)
+
+    def test_truncated_reference_is_passed_through(self) -> None:
+        sr = 8_000
+        rng = np.random.default_rng(505)
+        mixture = rng.standard_normal((2 * sr, 2)).astype(np.float32)
+        short_reference = rng.standard_normal((sr, 2)).astype(np.float32)
+
+        output, diagnostics = _cancel_chunk(
+            mixture,
+            short_reference,
+            sr,
+            cleanup_strength=1.0,
+            center_strength=1.0,
+            center_cleanup_strength=2.0,
+            silence_cleanup_strength=1.0,
+        )
+
+        expected = 0.5 * (mixture[:, 0] + mixture[:, 1])
+        np.testing.assert_array_equal(output, expected)
+        self.assertEqual(diagnostics["alignment_score"], 0.0)
+        self.assertEqual(diagnostics["insufficient_reference_passthrough"], 1.0)
+
+        stereo_output, _ = _cancel_chunk(
+            mixture,
+            short_reference,
+            sr,
+            cleanup_strength=1.0,
+            center_strength=1.0,
+            center_cleanup_strength=2.0,
+            silence_cleanup_strength=1.0,
+            mixture_channels=2,
+            reference_channels=2,
+            output_channels=2,
+        )
+        np.testing.assert_array_equal(stereo_output, mixture)
+
+    def test_complex_transfer_reconstructs_known_filter(self) -> None:
+        rng = np.random.default_rng(11)
+        reference = (
+            rng.standard_normal((64, 200)) + 1j * rng.standard_normal((64, 200))
+        ).astype(np.complex64)
+        expected_transfer = 0.42 * np.exp(0.35j)
+        mixture = expected_transfer * reference
+
+        transfer, coherence = _estimate_complex_transfer(
+            mixture, reference, sigma=(1.0, 5.0)
+        )
+        reconstruction = transfer * reference
+        relative_error = np.sqrt(
+            np.mean(np.abs(mixture - reconstruction) ** 2)
+            / np.mean(np.abs(mixture) ** 2)
+        )
+
+        self.assertLess(relative_error, 0.02)
+        self.assertGreater(float(np.median(coherence)), 0.98)
+
+    def test_stereo_side_control_recovers_centered_target(self) -> None:
+        sr = 16_000
+        duration = 4
+        frames = sr * duration
+        rng = np.random.default_rng(7)
+        time = np.arange(frames) / sr
+
+        reference = scipy.signal.lfilter(
+            [1.0],
+            [1.0, -0.94],
+            rng.standard_normal((frames, 2)),
+            axis=0,
+        ).astype(np.float32)
+        reference /= np.max(np.abs(reference))
+        target = (
+            0.12
+            * np.sin(2 * np.pi * (170 + 20 * np.sin(2 * np.pi * 0.3 * time)) * time)
+            * (np.sin(2 * np.pi * 2.1 * time) > 0)
+        ).astype(np.float32)
+        gain = (0.25 + 0.5 * (0.5 + 0.5 * np.sin(2 * np.pi * 0.17 * time)) ** 2).astype(
+            np.float32
+        )
+        mixture = np.column_stack(
+            [
+                target + gain * reference[:, 0],
+                target + gain * reference[:, 1],
+            ]
+        ).astype(np.float32)
+        pad = np.zeros((int(0.2 * sr), 2), dtype=np.float32)
+        reference_search = np.vstack([pad, reference, pad])
+
+        output, diagnostics = _cancel_chunk(
+            mixture, reference_search, sr, cleanup_strength=0.0
+        )
+
+        relative_error = np.sqrt(np.mean((target - output) ** 2) / np.mean(target**2))
+        self.assertEqual(len(output), len(target))
+        self.assertGreater(diagnostics["alignment_score"], 0.8)
+        self.assertLess(relative_error, 0.02)
+
+        host_mid = scipy.signal.lfilter(
+            [1.0],
+            [1.0, -0.85],
+            rng.standard_normal(frames),
+        ).astype(np.float32)
+        host_side = scipy.signal.lfilter(
+            [1.0],
+            [1.0, -0.80],
+            rng.standard_normal(frames),
+        ).astype(np.float32)
+        host_mid *= 0.15 / np.std(host_mid)
+        host_side *= 0.50 / np.std(host_side)
+        host_bgm = np.column_stack([host_mid + host_side, host_mid - host_side])
+        mixture_with_bgm = mixture + host_bgm
+        raw_with_bgm, _ = _cancel_chunk(
+            mixture_with_bgm,
+            reference_search,
+            sr,
+            cleanup_strength=0.0,
+            center_strength=1.0,
+        )
+        guarded_with_bgm, bgm_diagnostics = _cancel_chunk(
+            mixture_with_bgm,
+            reference_search,
+            sr,
+            cleanup_strength=1.0,
+            center_strength=1.0,
+            center_cleanup_strength=1.0,
+            silence_cleanup_strength=1.0,
+        )
+        guard_difference = np.sqrt(
+            np.mean((guarded_with_bgm - raw_with_bgm) ** 2) / np.mean(raw_with_bgm**2)
+        )
+        self.assertLess(bgm_diagnostics["foreground_guard"], 0.15)
+        self.assertLess(guard_difference, 0.01)
+
+    def test_center_prior_reduces_colored_center_reference(self) -> None:
+        sr = 16_000
+        frames = 4 * sr
+        time = np.arange(frames) / sr
+        rng = np.random.default_rng(42)
+
+        center_reference = (
+            0.3
+            * np.sin(2 * np.pi * (220 + 20 * np.sin(2 * np.pi * 0.7 * time)) * time)
+            * (0.4 + 0.6 * (np.sin(2 * np.pi * 2.3 * time) > 0))
+        ).astype(np.float32)
+        mid_bed = scipy.signal.lfilter(
+            [1.0], [1.0, -0.8], rng.standard_normal(frames)
+        ).astype(np.float32)
+        mid_bed *= 0.03 / np.std(mid_bed)
+        reference_mid = center_reference + mid_bed
+
+        reference_side = scipy.signal.lfilter(
+            [1.0], [1.0, -0.7], rng.standard_normal(frames)
+        ).astype(np.float32)
+        reference_side *= 0.08 / np.std(reference_side)
+        target = (
+            0.25
+            * np.sin(2 * np.pi * (173 + 13 * np.sin(2 * np.pi * 0.31 * time)) * time)
+        ).astype(np.float32)
+
+        mixture_mid = target + scipy.signal.lfilter(
+            [0.7, 0.18, -0.06], [1.0], reference_mid
+        ).astype(np.float32)
+        mixture_side = scipy.signal.lfilter([0.52, 0.02], [1.0], reference_side).astype(
+            np.float32
+        )
+        mixture_side += (0.03 * rng.standard_normal(frames)).astype(np.float32)
+        scalar_gain = np.full(frames, 0.52, dtype=np.float32)
+
+        conservative, _, _ = _complex_reference_cancel(
+            mixture_mid,
+            mixture_side,
+            reference_mid,
+            reference_side,
+            scalar_gain,
+            cleanup_strength=0.0,
+            center_strength=0.0,
+            sr=sr,
+        )
+        balanced, _, _ = _complex_reference_cancel(
+            mixture_mid,
+            mixture_side,
+            reference_mid,
+            reference_side,
+            scalar_gain,
+            cleanup_strength=0.0,
+            center_strength=0.5,
+            sr=sr,
+        )
+        conservative_error = np.sqrt(
+            np.mean((conservative - target) ** 2) / np.mean(target**2)
+        )
+        balanced_error = np.sqrt(np.mean((balanced - target) ** 2) / np.mean(target**2))
+
+        self.assertLess(balanced_error, 0.85 * conservative_error)
+
+        protected, _, _ = _complex_reference_cancel(
+            mixture_mid,
+            mixture_side,
+            reference_mid,
+            reference_side,
+            scalar_gain,
+            cleanup_strength=1.0,
+            center_strength=1.0,
+            sr=sr,
+            center_cleanup_strength=1.0,
+            silence_cleanup_strength=0.0,
+        )
+        foreground_guarded, _, _ = _complex_reference_cancel(
+            mixture_mid,
+            mixture_side,
+            reference_mid,
+            reference_side,
+            scalar_gain,
+            cleanup_strength=1.0,
+            center_strength=1.0,
+            sr=sr,
+            center_cleanup_strength=1.0,
+            silence_cleanup_strength=1.0,
+        )
+        guard_delta = np.sqrt(
+            np.mean((foreground_guarded - protected) ** 2) / np.mean(protected**2)
+        )
+        self.assertLess(guard_delta, 0.01)
+
+    def test_filtered_path_does_not_take_scalar_fast_path(self) -> None:
+        sr = 16_000
+        frames = 4 * sr
+        rng = np.random.default_rng(606)
+        reference_mid = scipy.signal.lfilter(
+            [1.0], [1.0, -0.91], rng.standard_normal(frames)
+        ).astype(np.float32)
+        reference_side = scipy.signal.lfilter(
+            [1.0], [1.0, -0.73], rng.standard_normal(frames)
+        ).astype(np.float32)
+        reference_mid *= 0.20 / np.std(reference_mid)
+        reference_side *= 0.10 / np.std(reference_side)
+        target = scipy.signal.lfilter(
+            [1.0], [1.0, -0.82], rng.standard_normal(frames)
+        ).astype(np.float32)
+        target *= 0.08 / np.std(target)
+        path = [0.62, 0.18, -0.08, 0.04]
+        mixture_mid = target + scipy.signal.lfilter(path, [1.0], reference_mid)
+        mixture_side = scipy.signal.lfilter(path, [1.0], reference_side)
+        scalar_gain = np.full(frames, 0.62, dtype=np.float32)
+
+        output, _, _ = _complex_reference_cancel(
+            mixture_mid,
+            mixture_side,
+            reference_mid,
+            reference_side,
+            scalar_gain,
+            cleanup_strength=0.0,
+            center_strength=0.5,
+            sr=sr,
+        )
+        scalar_output = mixture_mid - scalar_gain * reference_mid
+        complex_error = np.sqrt(np.mean((output - target) ** 2))
+        scalar_error = np.sqrt(np.mean((scalar_output - target) ** 2))
+
+        self.assertLess(complex_error, 0.50 * scalar_error)
+
+    def test_stereo_output_downmix_matches_mono_output(self) -> None:
+        sr = 8_000
+        frames = 4 * sr
+        rng = np.random.default_rng(707)
+        reference = scipy.signal.lfilter(
+            [1.0],
+            [1.0, -0.82],
+            rng.standard_normal((frames, 2)),
+            axis=0,
+        ).astype(np.float32)
+        reference *= 0.16 / np.std(reference)
+        target_mid = scipy.signal.lfilter(
+            [1.0], [1.0, -0.88], rng.standard_normal(frames)
+        ).astype(np.float32)
+        target_side = scipy.signal.lfilter(
+            [1.0], [1.0, -0.70], rng.standard_normal(frames)
+        ).astype(np.float32)
+        target_mid *= 0.06 / np.std(target_mid)
+        target_side *= 0.03 / np.std(target_side)
+        target = np.column_stack([target_mid + target_side, target_mid - target_side])
+        mixture = target + 0.55 * reference
+        pad = np.zeros((sr // 4, 2), dtype=np.float32)
+        reference_search = np.vstack([pad, reference, pad])
+
+        mono, _ = _cancel_chunk(
+            mixture,
+            reference_search,
+            sr,
+            cleanup_strength=0.0,
+            mixture_channels=2,
+            reference_channels=2,
+            output_channels=1,
+        )
+        stereo, _ = _cancel_chunk(
+            mixture,
+            reference_search,
+            sr,
+            cleanup_strength=0.0,
+            mixture_channels=2,
+            reference_channels=2,
+            output_channels=2,
+        )
+
+        self.assertEqual(stereo.shape, (frames, 2))
+        np.testing.assert_allclose(stereo.mean(axis=1), mono, atol=2e-7, rtol=0.0)
+
+    def test_mono_reference_preserves_stereo_mixture_side(self) -> None:
+        sr = 8_000
+        frames = 4 * sr
+        rng = np.random.default_rng(808)
+        reference_mono = scipy.signal.lfilter(
+            [1.0], [1.0, -0.84], rng.standard_normal(frames)
+        ).astype(np.float32)
+        reference_mono *= 0.18 / np.std(reference_mono)
+        reference = np.column_stack([reference_mono, reference_mono])
+        target_mid = scipy.signal.lfilter(
+            [1.0], [1.0, -0.90], rng.standard_normal(frames)
+        ).astype(np.float32)
+        target_side = scipy.signal.lfilter(
+            [1.0], [1.0, -0.65], rng.standard_normal(frames)
+        ).astype(np.float32)
+        target_mid *= 0.05 / np.std(target_mid)
+        target_side *= 0.04 / np.std(target_side)
+        mixture = np.column_stack(
+            [
+                target_mid + target_side + 0.6 * reference_mono,
+                target_mid - target_side + 0.6 * reference_mono,
+            ]
+        ).astype(np.float32)
+        pad = np.zeros((sr // 4, 2), dtype=np.float32)
+
+        output, _ = _cancel_chunk(
+            mixture,
+            np.vstack([pad, reference, pad]),
+            sr,
+            cleanup_strength=0.0,
+            mixture_channels=2,
+            reference_channels=1,
+            output_channels=2,
+        )
+
+        output_mid = output.mean(axis=1)
+        output_side = 0.5 * (output[:, 0] - output[:, 1])
+        relative_mid_error = np.sqrt(
+            np.mean((output_mid - target_mid) ** 2) / np.mean(target_mid**2)
+        )
+        np.testing.assert_allclose(output_side, target_side, atol=2e-7, rtol=0.0)
+        self.assertLess(relative_mid_error, 0.10)
+
+    def test_mono_mixture_routes_cancel_both_reference_layouts(self) -> None:
+        sr = 8_000
+        frames = 4 * sr
+        rng = np.random.default_rng(909)
+        reference_mid = scipy.signal.lfilter(
+            [1.0], [1.0, -0.86], rng.standard_normal(frames)
+        ).astype(np.float32)
+        reference_side = scipy.signal.lfilter(
+            [1.0], [1.0, -0.72], rng.standard_normal(frames)
+        ).astype(np.float32)
+        reference_mid *= 0.18 / np.std(reference_mid)
+        reference_side *= 0.08 / np.std(reference_side)
+        stereo_reference = np.column_stack(
+            [
+                reference_mid + reference_side,
+                reference_mid - reference_side,
+            ]
+        )
+        mono_reference = np.column_stack([reference_mid, reference_mid])
+        target = scipy.signal.lfilter(
+            [1.0], [1.0, -0.91], rng.standard_normal(frames)
+        ).astype(np.float32)
+        target *= 0.04 / np.std(target)
+        mixture_mono = target + 0.58 * reference_mid
+        decoded_mixture = np.column_stack([mixture_mono, mixture_mono])
+        pad = np.zeros((sr // 4, 2), dtype=np.float32)
+
+        for reference, reference_channels in (
+            (mono_reference, 1),
+            (stereo_reference, 2),
+        ):
+            with self.subTest(reference_channels=reference_channels):
+                output, _ = _cancel_chunk(
+                    decoded_mixture,
+                    np.vstack([pad, reference, pad]),
+                    sr,
+                    cleanup_strength=0.0,
+                    mixture_channels=1,
+                    reference_channels=reference_channels,
+                    output_channels=1,
+                )
+                relative_error = np.sqrt(
+                    np.mean((output - target) ** 2) / np.mean(target**2)
+                )
+                self.assertEqual(output.ndim, 1)
+                self.assertLess(relative_error, 0.10)
+
+
+if __name__ == "__main__":
+    unittest.main()
