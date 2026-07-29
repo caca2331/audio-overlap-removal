@@ -1,0 +1,29 @@
+{
+  "early": {
+    "mixture_start_sec": 400.0,
+    "reference_start_sec": 318.467,
+    "foreground_guard": 1.0,
+    "nonlinear_validation_improvement": 0.00014657487904556898,
+    "correction_to_current_rms_ratio": 0.00030182521599505716,
+    "current_reference_related_rms": 1.4699736665919706e-05,
+    "two_pass_reference_related_rms": 1.4699708648336713e-05
+  },
+  "middle": {
+    "mixture_start_sec": 2200.192,
+    "reference_start_sec": 2118.659,
+    "foreground_guard": 1.0,
+    "nonlinear_validation_improvement": 0.002887973707641489,
+    "correction_to_current_rms_ratio": 0.009878543636488586,
+    "current_reference_related_rms": 0.0007010287922514,
+    "two_pass_reference_related_rms": 0.0006185202344593608
+  },
+  "late": {
+    "mixture_start_sec": 3719.992,
+    "reference_start_sec": 3638.529,
+    "foreground_guard": 0.6846018526970118,
+    "nonlinear_validation_improvement": 0.0012420896864453468,
+    "correction_to_current_rms_ratio": 1.9094709659639993e-05,
+    "current_reference_related_rms": 7.661329538371103e-05,
+    "two_pass_reference_related_rms": 7.667269464037263e-05
+  }
+}

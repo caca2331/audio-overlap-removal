@@ -1,0 +1,210 @@
+{
+  "common_fir": {
+    "current": {
+      "suppression_db": 19.014905720912083,
+      "foreground_db": -0.5790464878082275,
+      "media_db": -59.98588943481445,
+      "unexplained_db": -19.980565627285706,
+      "error_rms": 0.014900327005325884
+    },
+    "structured": {
+      "suppression_db": 19.014905720912083,
+      "foreground_db": -0.5790464878082275,
+      "media_db": -59.98588943481445,
+      "unexplained_db": -19.980565627285706,
+      "error_rms": 0.014900327005325884
+    },
+    "diagnostics": {
+      "iterations": 0.0,
+      "guard": 1.0,
+      "scalar_side_error": 0.15605351464450037,
+      "mid_correction_ratio": 0.0,
+      "side_improvement": 0.0
+    }
+  },
+  "moving_gain": {
+    "current": {
+      "suppression_db": 25.91022683567325,
+      "foreground_db": 0.0001874123845482245,
+      "media_db": -32.90780258178711,
+      "unexplained_db": -26.877361712028627,
+      "error_rms": 0.003912899786290259
+    },
+    "structured": {
+      "suppression_db": 28.218181493688892,
+      "foreground_db": 6.212630523805274e-06,
+      "media_db": -35.111080169677734,
+      "unexplained_db": -29.211822467146163,
+      "error_rms": 0.0029998600357359208
+    },
+    "diagnostics": {
+      "iterations": 2.0,
+      "guard": 1.0,
+      "scalar_side_error": 0.09584791229700022,
+      "mid_correction_ratio": 0.0015866002347193666,
+      "side_improvement": 0.032936332046061056,
+      "coherence_median": 0.09903722256422043
+    }
+  },
+  "path_switch": {
+    "current": {
+      "suppression_db": 17.906530606329618,
+      "foreground_db": -0.42486727237701416,
+      "media_db": -48.78904724121094,
+      "unexplained_db": -18.68135511933139,
+      "error_rms": 0.01221229678443999
+    },
+    "structured": {
+      "suppression_db": 17.906530606329618,
+      "foreground_db": -0.42486727237701416,
+      "media_db": -48.78904724121094,
+      "unexplained_db": -18.68135511933139,
+      "error_rms": 0.01221229678443999
+    },
+    "diagnostics": {
+      "iterations": 0.0,
+      "guard": 1.0,
+      "scalar_side_error": 0.2430600036321224,
+      "mid_correction_ratio": 0.0,
+      "side_improvement": 0.0
+    }
+  },
+  "soft_clip": {
+    "current": {
+      "suppression_db": 14.51344897463633,
+      "foreground_db": -0.5831072330474854,
+      "media_db": -32.24732971191406,
+      "unexplained_db": -15.08934320672682,
+      "error_rms": 0.020451814390179342
+    },
+    "structured": {
+      "suppression_db": 14.51344897463633,
+      "foreground_db": -0.5831072330474854,
+      "media_db": -32.24732971191406,
+      "unexplained_db": -15.08934320672682,
+      "error_rms": 0.020451814390179342
+    },
+    "diagnostics": {
+      "iterations": 0.0,
+      "guard": 1.0,
+      "scalar_side_error": 0.300770679100594,
+      "mid_correction_ratio": 0.0,
+      "side_improvement": 0.0
+    }
+  },
+  "asymmetric_lr": {
+    "current": {
+      "suppression_db": 13.738826334777343,
+      "foreground_db": -0.8750160932540894,
+      "media_db": -47.95288848876953,
+      "unexplained_db": -14.55914708208746,
+      "error_rms": 0.023851635370777884
+    },
+    "structured": {
+      "suppression_db": 13.738826334777343,
+      "foreground_db": -0.8750160932540894,
+      "media_db": -47.95288848876953,
+      "unexplained_db": -14.55914708208746,
+      "error_rms": 0.023851635370777884
+    },
+    "diagnostics": {
+      "iterations": 0.0,
+      "guard": 1.0,
+      "scalar_side_error": 0.5083499913279419,
+      "mid_correction_ratio": 0.0,
+      "side_improvement": 0.0
+    }
+  },
+  "side_doubletalk": {
+    "current": {
+      "suppression_db": 18.116146000823864,
+      "foreground_db": -0.5054924488067627,
+      "media_db": -58.0482177734375,
+      "unexplained_db": -18.999120428442435,
+      "error_rms": 0.016524707680764753
+    },
+    "structured": {
+      "suppression_db": 18.116146000823864,
+      "foreground_db": -0.5054924488067627,
+      "media_db": -58.0482177734375,
+      "unexplained_db": -18.999120428442435,
+      "error_rms": 0.016524707680764753
+    },
+    "diagnostics": {
+      "iterations": 0.0,
+      "guard": 1.0,
+      "scalar_side_error": 0.17815842094481868,
+      "mid_correction_ratio": 0.0,
+      "side_improvement": 0.0
+    }
+  },
+  "music_doubletalk": {
+    "current": {
+      "suppression_db": 20.335377151253795,
+      "foreground_db": -0.796593427658081,
+      "media_db": -56.552066802978516,
+      "unexplained_db": -21.557639261571214,
+      "error_rms": 0.012798887688379501
+    },
+    "structured": {
+      "suppression_db": 20.335377151253795,
+      "foreground_db": -0.796593427658081,
+      "media_db": -56.552066802978516,
+      "unexplained_db": -21.557639261571214,
+      "error_rms": 0.012798887688379501
+    },
+    "diagnostics": {
+      "iterations": 0.0,
+      "guard": 1.0,
+      "scalar_side_error": 0.17815842111403515,
+      "mid_correction_ratio": 0.0,
+      "side_improvement": 0.0
+    }
+  },
+  "voice_only": {
+    "current": {
+      "suppression_db": 225.10545044721238,
+      "foreground_db": 0.0,
+      "media_db": -239.99954223632812,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "structured": {
+      "suppression_db": 225.10545044721238,
+      "foreground_db": 0.0,
+      "media_db": -239.99954223632812,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "diagnostics": {
+      "iterations": 0.0,
+      "guard": 0.0,
+      "scalar_side_error": 0.0,
+      "mid_correction_ratio": 0.0,
+      "side_improvement": 0.0
+    }
+  },
+  "music_only": {
+    "current": {
+      "suppression_db": 33.86664753258039,
+      "foreground_db": -0.04381880164146423,
+      "media_db": -96.34037017822266,
+      "unexplained_db": -33.91008775811316,
+      "error_rms": 0.0036470368006613556
+    },
+    "structured": {
+      "suppression_db": 33.86664753258039,
+      "foreground_db": -0.04381880164146423,
+      "media_db": -96.34037017822266,
+      "unexplained_db": -33.91008775811316,
+      "error_rms": 0.0036470368006613556
+    },
+    "diagnostics": {
+      "iterations": 0.0,
+      "guard": 0.0,
+      "scalar_side_error": 0.9999999997311733,
+      "mid_correction_ratio": 0.0,
+      "side_improvement": 0.0
+    }
+  }
+}

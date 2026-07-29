@@ -1,0 +1,425 @@
+{
+  "common_fir": {
+    "current": {
+      "suppression_db": 19.014905720912083,
+      "foreground_db": -0.5790464878082275,
+      "media_db": -59.98588943481445,
+      "unexplained_db": -19.980565627285706,
+      "error_rms": 0.014900327005325884
+    },
+    "0.9": {
+      "suppression_db": 19.20658673829004,
+      "foreground_db": -0.5681328773498535,
+      "media_db": -54.81035232543945,
+      "unexplained_db": -20.181308662413123,
+      "error_rms": 0.01457510690040128,
+      "gate_mean": 0.9002513885498047,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.8999999761581421,
+      "risky_acceptance_rms": 0.9105992520298105,
+      "full_safe_difference_ratio": 0.06989305936822678,
+      "full_residual_rms": 0.09908070235990721,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.15605351464450037
+    },
+    "0.95": {
+      "suppression_db": 19.110378774860354,
+      "foreground_db": -0.5736640095710754,
+      "media_db": -57.010826110839844,
+      "unexplained_db": -20.08075601840632,
+      "error_rms": 0.014737443289801292,
+      "gate_mean": 0.9501256942749023,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.949999988079071,
+      "risky_acceptance_rms": 0.9552234662319732,
+      "full_safe_difference_ratio": 0.06989305936822678,
+      "full_residual_rms": 0.09908070235990721,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.15605351464450037
+    }
+  },
+  "moving_gain": {
+    "current": {
+      "suppression_db": 25.91022683567325,
+      "foreground_db": 0.0001874123845482245,
+      "media_db": -32.90780258178711,
+      "unexplained_db": -26.877361712028627,
+      "error_rms": 0.003912899786290259
+    },
+    "0.9": {
+      "suppression_db": 25.91022683567325,
+      "foreground_db": 0.0001874123845482245,
+      "media_db": -32.90780258178711,
+      "unexplained_db": -26.877361712028627,
+      "error_rms": 0.003912899786290259,
+      "fast_path": 1.0,
+      "scalar_side_error": 0.09584791229700022
+    },
+    "0.95": {
+      "suppression_db": 25.91022683567325,
+      "foreground_db": 0.0001874123845482245,
+      "media_db": -32.90780258178711,
+      "unexplained_db": -26.877361712028627,
+      "error_rms": 0.003912899786290259,
+      "fast_path": 1.0,
+      "scalar_side_error": 0.09584791229700022
+    }
+  },
+  "path_switch": {
+    "current": {
+      "suppression_db": 17.906530606329618,
+      "foreground_db": -0.42486727237701416,
+      "media_db": -48.78904724121094,
+      "unexplained_db": -18.68135511933139,
+      "error_rms": 0.01221229678443999
+    },
+    "0.9": {
+      "suppression_db": 18.145854606237606,
+      "foreground_db": -0.4150942265987396,
+      "media_db": -46.2770881652832,
+      "unexplained_db": -18.93273323924344,
+      "error_rms": 0.011880402377668103,
+      "gate_mean": 0.9002260565757751,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.8999999761581421,
+      "risky_acceptance_rms": 0.9182873026493327,
+      "full_safe_difference_ratio": 0.09582343096935016,
+      "full_residual_rms": 0.09929590304747227,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.2430600036321224
+    },
+    "0.95": {
+      "suppression_db": 18.027611810650875,
+      "foreground_db": -0.4199407994747162,
+      "media_db": -47.43585205078125,
+      "unexplained_db": -18.808523416698677,
+      "error_rms": 0.012043238576377645,
+      "gate_mean": 0.9501129388809204,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.949999988079071,
+      "risky_acceptance_rms": 0.9590157967442086,
+      "full_safe_difference_ratio": 0.09582343096935016,
+      "full_residual_rms": 0.09929590304747227,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.2430600036321224
+    }
+  },
+  "soft_clip": {
+    "current": {
+      "suppression_db": 14.51344897463633,
+      "foreground_db": -0.5831072330474854,
+      "media_db": -32.24732971191406,
+      "unexplained_db": -15.08934320672682,
+      "error_rms": 0.020451814390179342
+    },
+    "0.9": {
+      "suppression_db": 14.597796178627085,
+      "foreground_db": -0.5727935433387756,
+      "media_db": -31.952486038208008,
+      "unexplained_db": -15.173371634053787,
+      "error_rms": 0.020254171474157874,
+      "gate_mean": 0.9000545740127563,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.8999999761581421,
+      "risky_acceptance_rms": 0.9075324344368724,
+      "full_safe_difference_ratio": 0.10927056685722338,
+      "full_residual_rms": 0.10080449205282369,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.300770679100594
+    },
+    "0.95": {
+      "suppression_db": 14.5558951057537,
+      "foreground_db": -0.5778500437736511,
+      "media_db": -32.118675231933594,
+      "unexplained_db": -15.131057209601435,
+      "error_rms": 0.020352114443546364,
+      "gate_mean": 0.9500272274017334,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.949999988079071,
+      "risky_acceptance_rms": 0.9537377683289764,
+      "full_safe_difference_ratio": 0.10927056685722338,
+      "full_residual_rms": 0.10080449205282369,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.300770679100594
+    }
+  },
+  "asymmetric_lr": {
+    "current": {
+      "suppression_db": 13.738826334777343,
+      "foreground_db": -0.8750160932540894,
+      "media_db": -47.95288848876953,
+      "unexplained_db": -14.55914708208746,
+      "error_rms": 0.023851635370777884
+    },
+    "0.9": {
+      "suppression_db": 13.800933920888658,
+      "foreground_db": -0.8610040545463562,
+      "media_db": -46.68007278442383,
+      "unexplained_db": -14.607355457707419,
+      "error_rms": 0.023681694930033872,
+      "gate_mean": 0.9007004499435425,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.9000234007835388,
+      "risky_acceptance_rms": 0.9240259235094439,
+      "full_safe_difference_ratio": 0.17725651876353268,
+      "full_residual_rms": 0.09962549210280124,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.5083499913279419
+    },
+    "0.95": {
+      "suppression_db": 13.776771525973952,
+      "foreground_db": -0.8665395379066467,
+      "media_db": -47.2852783203125,
+      "unexplained_db": -14.588698735517331,
+      "error_rms": 0.023747664348148276,
+      "gate_mean": 0.9503501653671265,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.950011670589447,
+      "risky_acceptance_rms": 0.9619082655522773,
+      "full_safe_difference_ratio": 0.17725651876353268,
+      "full_residual_rms": 0.09962549210280124,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.5083499913279419
+    }
+  },
+  "side_doubletalk": {
+    "current": {
+      "suppression_db": 18.116146000823864,
+      "foreground_db": -0.5054924488067627,
+      "media_db": -58.0482177734375,
+      "unexplained_db": -18.999120428442435,
+      "error_rms": 0.016524707680764753
+    },
+    "0.9": {
+      "suppression_db": 18.316309317956502,
+      "foreground_db": -0.49592268466949463,
+      "media_db": -53.10194396972656,
+      "unexplained_db": -19.2093768448808,
+      "error_rms": 0.016148255779313194,
+      "gate_mean": 0.9002009630203247,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.8999999761581421,
+      "risky_acceptance_rms": 0.9085119878984562,
+      "full_safe_difference_ratio": 0.07748241121898208,
+      "full_residual_rms": 0.12038479556652201,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.17815842094481868
+    },
+    "0.95": {
+      "suppression_db": 18.21644563821321,
+      "foreground_db": -0.5007010102272034,
+      "media_db": -55.202030181884766,
+      "unexplained_db": -19.104479940890617,
+      "error_rms": 0.016334987397851098,
+      "gate_mean": 0.9501004219055176,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.949999988079071,
+      "risky_acceptance_rms": 0.954204124022085,
+      "full_safe_difference_ratio": 0.07748241121898208,
+      "full_residual_rms": 0.12038479556652201,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.17815842094481868
+    }
+  },
+  "music_doubletalk": {
+    "current": {
+      "suppression_db": 20.335377151253795,
+      "foreground_db": -0.796593427658081,
+      "media_db": -56.552066802978516,
+      "unexplained_db": -21.557639261571214,
+      "error_rms": 0.012798887688379501
+    },
+    "0.9": {
+      "suppression_db": 20.51350902463188,
+      "foreground_db": -0.7822840809822083,
+      "media_db": -54.257774353027344,
+      "unexplained_db": -21.74588793289643,
+      "error_rms": 0.012539078880374354,
+      "gate_mean": 0.9010009169578552,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.9000024795532227,
+      "risky_acceptance_rms": 0.9255229034110904,
+      "full_safe_difference_ratio": 0.06376518391051225,
+      "full_residual_rms": 0.06909806388966863,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.17815842111403515
+    },
+    "0.95": {
+      "suppression_db": 20.424379931419594,
+      "foreground_db": -0.7894471287727356,
+      "media_db": -55.30472183227539,
+      "unexplained_db": -21.651782826452937,
+      "error_rms": 0.012668409377909393,
+      "gate_mean": 0.9505004286766052,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.9500012397766113,
+      "risky_acceptance_rms": 0.9625484967831555,
+      "full_safe_difference_ratio": 0.06376518391051225,
+      "full_residual_rms": 0.06909806388966863,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.17815842111403515
+    }
+  },
+  "voice_only": {
+    "current": {
+      "suppression_db": 225.10545044721238,
+      "foreground_db": 0.0,
+      "media_db": -239.99954223632812,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "0.9": {
+      "suppression_db": 225.10545044721238,
+      "foreground_db": 0.0,
+      "media_db": -239.99954223632812,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0,
+      "fast_path": 1.0,
+      "scalar_side_error": 0.0
+    },
+    "0.95": {
+      "suppression_db": 225.10545044721238,
+      "foreground_db": 0.0,
+      "media_db": -239.99954223632812,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0,
+      "fast_path": 1.0,
+      "scalar_side_error": 0.0
+    }
+  },
+  "music_only": {
+    "current": {
+      "suppression_db": 33.86664753258039,
+      "foreground_db": -0.04381880164146423,
+      "media_db": -96.34037017822266,
+      "unexplained_db": -33.91008775811316,
+      "error_rms": 0.0036470368006613556
+    },
+    "0.9": {
+      "suppression_db": 34.455515677754086,
+      "foreground_db": -0.03998683765530586,
+      "media_db": -96.32463073730469,
+      "unexplained_db": -34.49695210183856,
+      "error_rms": 0.00340797765318747,
+      "gate_mean": 0.8999998569488525,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.8999999761581421,
+      "risky_acceptance_rms": 0.8999999562838278,
+      "full_safe_difference_ratio": 0.8682654226434586,
+      "full_residual_rms": 0.06960723826285287,
+      "guard": 0.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.9999999997311733
+    },
+    "0.95": {
+      "suppression_db": 34.1594702520823,
+      "foreground_db": -0.041902609169483185,
+      "media_db": -96.33246612548828,
+      "unexplained_db": -34.201969742818164,
+      "error_rms": 0.003526135602047486,
+      "gate_mean": 0.9499998688697815,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.949999988079071,
+      "risky_acceptance_rms": 0.9499999647178063,
+      "full_safe_difference_ratio": 0.8682654226434586,
+      "full_residual_rms": 0.06960723826285287,
+      "guard": 0.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.9999999997311733
+    }
+  },
+  "common_loud_voice": {
+    "current": {
+      "suppression_db": 17.361118253677603,
+      "foreground_db": -0.2674909234046936,
+      "media_db": -65.30907440185547,
+      "unexplained_db": -17.91856955010044,
+      "error_rms": 0.0180254108785939
+    },
+    "0.9": {
+      "suppression_db": 17.657278830864243,
+      "foreground_db": -0.2603912055492401,
+      "media_db": -55.18695831298828,
+      "unexplained_db": -18.224690516883342,
+      "error_rms": 0.017421162996378147,
+      "gate_mean": 0.9000584483146667,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.8999999761581421,
+      "risky_acceptance_rms": 0.902359385323248,
+      "full_safe_difference_ratio": 0.09204228887383026,
+      "full_residual_rms": 0.1988115233064706,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.1560535140465578
+    },
+    "0.95": {
+      "suppression_db": 17.512904524439147,
+      "foreground_db": -0.26382267475128174,
+      "media_db": -58.772430419921875,
+      "unexplained_db": -18.07529897061716,
+      "error_rms": 0.01771315240950484,
+      "gate_mean": 0.950029194355011,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.949999988079071,
+      "risky_acceptance_rms": 0.9511696006209477,
+      "full_safe_difference_ratio": 0.09204228887383026,
+      "full_residual_rms": 0.1988115233064706,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.1560535140465578
+    }
+  },
+  "common_quiet_voice": {
+    "current": {
+      "suppression_db": 19.81060679119468,
+      "foreground_db": -1.4911668300628662,
+      "media_db": -56.58613586425781,
+      "unexplained_db": -21.7368681489773,
+      "error_rms": 0.013595987170695803
+    },
+    "0.9": {
+      "suppression_db": 19.918205252991854,
+      "foreground_db": -1.4709720611572266,
+      "media_db": -54.51948165893555,
+      "unexplained_db": -21.8448611163554,
+      "error_rms": 0.013428602640648758,
+      "gate_mean": 0.9007095694541931,
+      "gate_p50": 0.8999999761581421,
+      "gate_p95": 0.9000001549720764,
+      "risky_acceptance_rms": 0.9253166709327044,
+      "full_safe_difference_ratio": 0.056076675012015846,
+      "full_residual_rms": 0.04926116407332564,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.1560535145545967
+    },
+    "0.95": {
+      "suppression_db": 19.863750872214975,
+      "foreground_db": -1.481326937675476,
+      "media_db": -55.50423049926758,
+      "unexplained_db": -21.790689696867073,
+      "error_rms": 0.013513054926826907,
+      "gate_mean": 0.9503547549247742,
+      "gate_p50": 0.949999988079071,
+      "gate_p95": 0.9500000476837158,
+      "risky_acceptance_rms": 0.9624693611385077,
+      "full_safe_difference_ratio": 0.056076675012015846,
+      "full_residual_rms": 0.04926116407332564,
+      "guard": 1.0,
+      "fast_path": 0.0,
+      "scalar_side_error": 0.1560535145545967
+    }
+  }
+}

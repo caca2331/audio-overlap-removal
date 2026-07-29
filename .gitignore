@@ -1,6 +1,7 @@
 /extra-asset/
 /out/
 /output/
+/experiments/iterative-cancellation/*.flac
 /extra-test-out/
 /.venv/
 /.pytest_cache/

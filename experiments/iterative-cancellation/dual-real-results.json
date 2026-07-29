@@ -1,0 +1,53 @@
+{
+  "early": {
+    "gate_mean": 0.9007920622825623,
+    "gate_p50": 0.8999999761581421,
+    "gate_p95": 0.9020286798477173,
+    "risky_acceptance_rms": 0.9197580916235382,
+    "full_safe_difference_ratio": 0.38895871804833326,
+    "full_residual_rms": 0.11116079640336306,
+    "guard": 1.0,
+    "fast_path": 0.0,
+    "scalar_side_error": 0.8326938279404749,
+    "difference_rms_ratio": 0.008156018714087294,
+    "current_output_rms": 0.10928903290887287,
+    "dual_output_rms": 0.10937041405250074,
+    "current_reference_related_rms": 1.4699736665919706e-05,
+    "dual_reference_related_rms": 1.33458099158812e-05,
+    "reference_related_change": -0.09210557227680949
+  },
+  "middle": {
+    "gate_mean": 0.9014286398887634,
+    "gate_p50": 0.8999999761581421,
+    "gate_p95": 0.900809109210968,
+    "risky_acceptance_rms": 0.9306038476567297,
+    "full_safe_difference_ratio": 0.4076485138275555,
+    "full_residual_rms": 0.055573322998926845,
+    "guard": 1.0,
+    "fast_path": 0.0,
+    "scalar_side_error": 0.5846714299584317,
+    "difference_rms_ratio": 0.011152105819020954,
+    "current_output_rms": 0.053956211624801395,
+    "dual_output_rms": 0.05400548174150688,
+    "current_reference_related_rms": 0.0007010287922514,
+    "dual_reference_related_rms": 0.0006975508777632229,
+    "reference_related_change": -0.0049611592585896425
+  },
+  "late": {
+    "gate_mean": 0.9013203382492065,
+    "gate_p50": 0.8999999761581421,
+    "gate_p95": 0.9041362404823303,
+    "risky_acceptance_rms": 0.9146901450073769,
+    "full_safe_difference_ratio": 0.5872271959724933,
+    "full_residual_rms": 0.11150473120501585,
+    "guard": 0.6846018526970118,
+    "fast_path": 0.0,
+    "scalar_side_error": 0.8922218766036939,
+    "difference_rms_ratio": 0.01824177295332472,
+    "current_output_rms": 0.10975574551439053,
+    "dual_output_rms": 0.11002142720696105,
+    "current_reference_related_rms": 7.661329538371103e-05,
+    "dual_reference_related_rms": 7.496012782679677e-05,
+    "reference_related_change": -0.021578089378043508
+  }
+}

@@ -1,0 +1,596 @@
+{
+  "common_fir": {
+    "baseline": {
+      "suppression_db": 26.325530810143402,
+      "foreground_db": -0.0817926898598671,
+      "media_db": -48.487911224365234,
+      "unexplained_db": -26.452295737660826,
+      "error_rms": 0.0064219148838522535
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 26.325085466649277,
+      "foreground_db": -0.08181516081094742,
+      "media_db": -48.576019287109375,
+      "unexplained_db": -26.451345971573815,
+      "error_rms": 0.006422244157127901
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 26.324568362302514,
+      "foreground_db": -0.08183815330266953,
+      "media_db": -48.665042877197266,
+      "unexplained_db": -26.450328095621934,
+      "error_rms": 0.006422626509352663
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 26.324568362302514,
+      "foreground_db": -0.08183815330266953,
+      "media_db": -48.665042877197266,
+      "unexplained_db": -26.450328095621934,
+      "error_rms": 0.006422626509352663
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 26.324568362302514,
+      "foreground_db": -0.08183815330266953,
+      "media_db": -48.665042877197266,
+      "unexplained_db": -26.450328095621934,
+      "error_rms": 0.006422626509352663
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 26.323979455077495,
+      "foreground_db": -0.08186063170433044,
+      "media_db": -48.75497817993164,
+      "unexplained_db": -26.449242036850706,
+      "error_rms": 0.0064230619810818615
+    },
+    "nonlinear": {
+      "suppression_db": 26.34000859773241,
+      "foreground_db": -0.0818125456571579,
+      "media_db": -51.73349380493164,
+      "unexplained_db": -26.45287756444921,
+      "error_rms": 0.006411219643609474,
+      "validation_improvement": 0.09448355348736315
+    },
+    "production": {
+      "suppression_db": 19.014905720912083,
+      "foreground_db": -0.5790464878082275,
+      "media_db": -59.98588943481445,
+      "unexplained_db": -19.980565627285706,
+      "error_rms": 0.014900327005325884
+    },
+    "production_two_pass": {
+      "suppression_db": 19.014535461321078,
+      "foreground_db": -0.5791394114494324,
+      "media_db": -70.8790283203125,
+      "unexplained_db": -19.97996735597654,
+      "error_rms": 0.014900962185693471
+    }
+  },
+  "moving_gain": {
+    "baseline": {
+      "suppression_db": 25.91022683567325,
+      "foreground_db": 0.0001874123845482245,
+      "media_db": -32.90780258178711,
+      "unexplained_db": -26.877361712028627,
+      "error_rms": 0.003912899786290259
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 26.61836998019918,
+      "foreground_db": 0.00013253514771349728,
+      "media_db": -33.52524948120117,
+      "unexplained_db": -27.608425333235395,
+      "error_rms": 0.0036065467659604686
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 27.302204846689996,
+      "foreground_db": 7.662212738068774e-05,
+      "media_db": -34.189971923828125,
+      "unexplained_db": -28.29716736584112,
+      "error_rms": 0.0033334951278531514
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 27.302204846689996,
+      "foreground_db": 7.662212738068774e-05,
+      "media_db": -34.189971923828125,
+      "unexplained_db": -28.29716736584112,
+      "error_rms": 0.0033334951278531514
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 27.446249826422925,
+      "foreground_db": 6.730325549142435e-05,
+      "media_db": -34.14543151855469,
+      "unexplained_db": -28.491121509488092,
+      "error_rms": 0.003278669009800724
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 28.10378976529771,
+      "foreground_db": 6.212630523805274e-06,
+      "media_db": -34.83734130859375,
+      "unexplained_db": -29.13935888090367,
+      "error_rms": 0.0030396289962313344
+    },
+    "nonlinear": {
+      "suppression_db": 25.91022683567325,
+      "foreground_db": 0.0001874123845482245,
+      "media_db": -32.90780258178711,
+      "unexplained_db": -26.877361712028627,
+      "error_rms": 0.003912899786290259,
+      "validation_improvement": -0.0002368737110616248
+    },
+    "production": {
+      "suppression_db": 25.91022683567325,
+      "foreground_db": 0.0001874123845482245,
+      "media_db": -32.90780258178711,
+      "unexplained_db": -26.877361712028627,
+      "error_rms": 0.003912899786290259
+    },
+    "production_two_pass": {
+      "suppression_db": 28.10378976529771,
+      "foreground_db": 6.212630523805274e-06,
+      "media_db": -34.83734130859375,
+      "unexplained_db": -29.13935888090367,
+      "error_rms": 0.0030396289962313344
+    }
+  },
+  "path_switch": {
+    "baseline": {
+      "suppression_db": 22.859356762054766,
+      "foreground_db": -0.06072019785642624,
+      "media_db": -40.675445556640625,
+      "unexplained_db": -22.98006547884323,
+      "error_rms": 0.006904878518807668
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 22.861441113963814,
+      "foreground_db": -0.06073114275932312,
+      "media_db": -40.71030044555664,
+      "unexplained_db": -22.981634726553143,
+      "error_rms": 0.006903221754720698
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 22.86339785402806,
+      "foreground_db": -0.0607420913875103,
+      "media_db": -40.745296478271484,
+      "unexplained_db": -22.983074743159733,
+      "error_rms": 0.0069016667857132105
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 22.86339785402806,
+      "foreground_db": -0.0607420913875103,
+      "media_db": -40.745296478271484,
+      "unexplained_db": -22.983074743159733,
+      "error_rms": 0.0069016667857132105
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 22.863425858561584,
+      "foreground_db": -0.0607420913875103,
+      "media_db": -40.74525833129883,
+      "unexplained_db": -22.983104422659785,
+      "error_rms": 0.006901644533801735
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 22.865263365274796,
+      "foreground_db": -0.06075304001569748,
+      "media_db": -40.780372619628906,
+      "unexplained_db": -22.98442421238965,
+      "error_rms": 0.006900184639955095
+    },
+    "nonlinear": {
+      "suppression_db": 22.859356762054766,
+      "foreground_db": -0.06072019785642624,
+      "media_db": -40.675445556640625,
+      "unexplained_db": -22.98006547884323,
+      "error_rms": 0.006904878518807668,
+      "validation_improvement": -0.03430290754708598
+    },
+    "production": {
+      "suppression_db": 17.906530606329618,
+      "foreground_db": -0.42486727237701416,
+      "media_db": -48.78904724121094,
+      "unexplained_db": -18.68135511933139,
+      "error_rms": 0.01221229678443999
+    },
+    "production_two_pass": {
+      "suppression_db": 17.90760748812052,
+      "foreground_db": -0.4249015152454376,
+      "media_db": -49.05861282348633,
+      "unexplained_db": -18.68251442535096,
+      "error_rms": 0.01221078279043728
+    }
+  },
+  "soft_clip": {
+    "baseline": {
+      "suppression_db": 14.624501431166168,
+      "foreground_db": -0.07109293341636658,
+      "media_db": -28.274070739746094,
+      "unexplained_db": -14.824081495818584,
+      "error_rms": 0.02019199452559735
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 14.624669931442305,
+      "foreground_db": -0.07106057554483414,
+      "media_db": -28.275339126586914,
+      "unexplained_db": -14.824193450719722,
+      "error_rms": 0.02019160281861122
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 14.624833052302604,
+      "foreground_db": -0.0710282102227211,
+      "media_db": -28.276607513427734,
+      "unexplained_db": -14.824299792700344,
+      "error_rms": 0.020191223624212877
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 14.624833052302604,
+      "foreground_db": -0.0710282102227211,
+      "media_db": -28.276607513427734,
+      "unexplained_db": -14.824299792700344,
+      "error_rms": 0.020191223624212877
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 14.624833052302604,
+      "foreground_db": -0.0710282102227211,
+      "media_db": -28.276607513427734,
+      "unexplained_db": -14.824299792700344,
+      "error_rms": 0.020191223624212877
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 14.624990799778676,
+      "foreground_db": -0.07099584490060806,
+      "media_db": -28.277875900268555,
+      "unexplained_db": -14.82440050727032,
+      "error_rms": 0.020190856927676814
+    },
+    "nonlinear": {
+      "suppression_db": 15.155837743604707,
+      "foreground_db": -0.07081211358308792,
+      "media_db": -21.84628677368164,
+      "unexplained_db": -16.214175211985648,
+      "error_rms": 0.018993823770650554,
+      "validation_improvement": 0.36853870161399616
+    },
+    "production": {
+      "suppression_db": 14.51344897463633,
+      "foreground_db": -0.5831072330474854,
+      "media_db": -32.24732971191406,
+      "unexplained_db": -15.08934320672682,
+      "error_rms": 0.020451814390179342
+    },
+    "production_two_pass": {
+      "suppression_db": 14.646455410116133,
+      "foreground_db": -0.5827063918113708,
+      "media_db": -23.52090835571289,
+      "unexplained_db": -15.840240583233303,
+      "error_rms": 0.020141022789904563
+    }
+  },
+  "asymmetric_lr": {
+    "baseline": {
+      "suppression_db": 19.98460147188425,
+      "foreground_db": -0.06629627197980881,
+      "media_db": -39.1874885559082,
+      "unexplained_db": -20.057240114402934,
+      "error_rms": 0.011620622805419393
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 19.984499592607982,
+      "foreground_db": -0.06629522889852524,
+      "media_db": -39.194976806640625,
+      "unexplained_db": -20.05704434683976,
+      "error_rms": 0.011620759107817173
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 19.984350814030435,
+      "foreground_db": -0.06629366427659988,
+      "media_db": -39.20246887207031,
+      "unexplained_db": -20.056800967287177,
+      "error_rms": 0.011620958158794045
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 19.984350814030435,
+      "foreground_db": -0.06629366427659988,
+      "media_db": -39.20246887207031,
+      "unexplained_db": -20.056800967287177,
+      "error_rms": 0.011620958158794045
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 19.984350814030435,
+      "foreground_db": -0.06629366427659988,
+      "media_db": -39.20246887207031,
+      "unexplained_db": -20.056800967287177,
+      "error_rms": 0.011620958158794045
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 19.984155130095942,
+      "foreground_db": -0.06629262119531631,
+      "media_db": -39.2099723815918,
+      "unexplained_db": -20.05650999945196,
+      "error_rms": 0.011621219969676523
+    },
+    "nonlinear": {
+      "suppression_db": 19.98460147188425,
+      "foreground_db": -0.06629627197980881,
+      "media_db": -39.1874885559082,
+      "unexplained_db": -20.057240114402934,
+      "error_rms": 0.011620622805419393,
+      "validation_improvement": -0.0023270964574357844
+    },
+    "production": {
+      "suppression_db": 13.738826334777343,
+      "foreground_db": -0.8750160932540894,
+      "media_db": -47.95288848876953,
+      "unexplained_db": -14.55914708208746,
+      "error_rms": 0.023851635370777884
+    },
+    "production_two_pass": {
+      "suppression_db": 13.738697514196703,
+      "foreground_db": -0.8750126361846924,
+      "media_db": -48.01470947265625,
+      "unexplained_db": -14.558955221923053,
+      "error_rms": 0.02385198911742108
+    }
+  },
+  "side_doubletalk": {
+    "baseline": {
+      "suppression_db": 24.830773086625793,
+      "foreground_db": -0.07500287890434265,
+      "media_db": -48.285011291503906,
+      "unexplained_db": -24.938487612346858,
+      "error_rms": 0.007627855043582454
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 24.83076613617348,
+      "foreground_db": -0.07500340044498444,
+      "media_db": -48.286048889160156,
+      "unexplained_db": -24.938476799211724,
+      "error_rms": 0.007627861147397509
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 24.83075892488047,
+      "foreground_db": -0.07500392198562622,
+      "media_db": -48.287078857421875,
+      "unexplained_db": -24.938465678262002,
+      "error_rms": 0.007627867480285321
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 24.83075892488047,
+      "foreground_db": -0.07500392198562622,
+      "media_db": -48.287078857421875,
+      "unexplained_db": -24.938465678262002,
+      "error_rms": 0.007627867480285321
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 24.83075892488047,
+      "foreground_db": -0.07500392198562622,
+      "media_db": -48.287078857421875,
+      "unexplained_db": -24.938465678262002,
+      "error_rms": 0.007627867480285321
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 24.83075144606634,
+      "foreground_db": -0.075004443526268,
+      "media_db": -48.28811264038086,
+      "unexplained_db": -24.93845431230062,
+      "error_rms": 0.007627874048113146
+    },
+    "nonlinear": {
+      "suppression_db": 24.830773086625793,
+      "foreground_db": -0.07500287890434265,
+      "media_db": -48.285011291503906,
+      "unexplained_db": -24.938487612346858,
+      "error_rms": 0.007627855043582454,
+      "validation_improvement": 0.0014845862768488871
+    },
+    "production": {
+      "suppression_db": 18.116146000823864,
+      "foreground_db": -0.5054924488067627,
+      "media_db": -58.0482177734375,
+      "unexplained_db": -18.999120428442435,
+      "error_rms": 0.016524707680764753
+    },
+    "production_two_pass": {
+      "suppression_db": 18.116112255746383,
+      "foreground_db": -0.5054935216903687,
+      "media_db": -58.05776596069336,
+      "unexplained_db": -18.999083273420304,
+      "error_rms": 0.016524771880132638
+    }
+  },
+  "music_doubletalk": {
+    "baseline": {
+      "suppression_db": 26.54260440267828,
+      "foreground_db": -0.12670950591564178,
+      "media_db": -48.376991271972656,
+      "unexplained_db": -26.69515228885802,
+      "error_rms": 0.006263410348176844
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 26.542573475809185,
+      "foreground_db": -0.12671002745628357,
+      "media_db": -48.37803268432617,
+      "unexplained_db": -26.695113683121324,
+      "error_rms": 0.006263432649636437
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 26.542542157155765,
+      "foreground_db": -0.12671002745628357,
+      "media_db": -48.37907791137695,
+      "unexplained_db": -26.69507469342474,
+      "error_rms": 0.0062634552336938275
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 26.542542157155765,
+      "foreground_db": -0.12671002745628357,
+      "media_db": -48.37907791137695,
+      "unexplained_db": -26.69507469342474,
+      "error_rms": 0.0062634552336938275
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 26.542542157155765,
+      "foreground_db": -0.12671002745628357,
+      "media_db": -48.37907791137695,
+      "unexplained_db": -26.69507469342474,
+      "error_rms": 0.0062634552336938275
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 26.54251045089278,
+      "foreground_db": -0.12671054899692535,
+      "media_db": -48.380123138427734,
+      "unexplained_db": -26.695035283295315,
+      "error_rms": 0.006263478097341605
+    },
+    "nonlinear": {
+      "suppression_db": 26.54260440267828,
+      "foreground_db": -0.12670950591564178,
+      "media_db": -48.376991271972656,
+      "unexplained_db": -26.69515228885802,
+      "error_rms": 0.006263410348176844,
+      "validation_improvement": 0.0014845879020226604
+    },
+    "production": {
+      "suppression_db": 20.335377151253795,
+      "foreground_db": -0.796593427658081,
+      "media_db": -56.552066802978516,
+      "unexplained_db": -21.557639261571214,
+      "error_rms": 0.012798887688379501
+    },
+    "production_two_pass": {
+      "suppression_db": 20.33533437033993,
+      "foreground_db": -0.7965940237045288,
+      "media_db": -56.560096740722656,
+      "unexplained_db": -21.557582925698856,
+      "error_rms": 0.012798950727340743
+    }
+  },
+  "voice_only": {
+    "baseline": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "nonlinear": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0,
+      "validation_improvement": 1.0
+    },
+    "production": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    },
+    "production_two_pass": {
+      "suppression_db": 224.62729027490067,
+      "foreground_db": 0.0,
+      "media_db": -239.99951171875,
+      "unexplained_db": -240.0,
+      "error_rms": 0.0
+    }
+  },
+  "music_only": {
+    "baseline": {
+      "suppression_db": 36.28422033449992,
+      "foreground_db": -0.024972854182124138,
+      "media_db": -95.7834701538086,
+      "unexplained_db": -36.3117168072705,
+      "error_rms": 0.0026130847587527008
+    },
+    "a0.25_m0_c0.15": {
+      "suppression_db": 36.28422033449992,
+      "foreground_db": -0.024972854182124138,
+      "media_db": -95.7834701538086,
+      "unexplained_db": -36.3117168072705,
+      "error_rms": 0.0026130847587527008
+    },
+    "a0.5_m0_c0.15": {
+      "suppression_db": 36.28422033449992,
+      "foreground_db": -0.024972854182124138,
+      "media_db": -95.7834701538086,
+      "unexplained_db": -36.3117168072705,
+      "error_rms": 0.0026130847587527008
+    },
+    "a0.5_m0.1_c0.15": {
+      "suppression_db": 36.28422033449992,
+      "foreground_db": -0.024972854182124138,
+      "media_db": -95.7834701538086,
+      "unexplained_db": -36.3117168072705,
+      "error_rms": 0.0026130847587527008
+    },
+    "a0.5_m0.2_c0.25": {
+      "suppression_db": 36.28422033449992,
+      "foreground_db": -0.024972854182124138,
+      "media_db": -95.7834701538086,
+      "unexplained_db": -36.3117168072705,
+      "error_rms": 0.0026130847587527008
+    },
+    "a0.75_m0.1_c0.25": {
+      "suppression_db": 36.28422033449992,
+      "foreground_db": -0.024972854182124138,
+      "media_db": -95.7834701538086,
+      "unexplained_db": -36.3117168072705,
+      "error_rms": 0.0026130847587527008
+    },
+    "nonlinear": {
+      "suppression_db": 36.28422033449992,
+      "foreground_db": -0.024972854182124138,
+      "media_db": -95.7834701538086,
+      "unexplained_db": -36.3117168072705,
+      "error_rms": 0.0026130847587527008,
+      "validation_improvement": -0.00010122904265696953
+    },
+    "production": {
+      "suppression_db": 33.38848736026869,
+      "foreground_db": -0.04381880164146423,
+      "media_db": -95.8622055053711,
+      "unexplained_db": -33.43192758582725,
+      "error_rms": 0.0036470368006613556
+    },
+    "production_two_pass": {
+      "suppression_db": 33.38848736026869,
+      "foreground_db": -0.04381880164146423,
+      "media_db": -95.8622055053711,
+      "unexplained_db": -33.43192758582725,
+      "error_rms": 0.0036470368006613556
+    }
+  }
+}

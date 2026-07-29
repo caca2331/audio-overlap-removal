@@ -1,0 +1,76 @@
+{
+  "current": {
+    "related_rms": 0.0007010287922514,
+    "output_rms": 0.053956211624801395
+  },
+  "0.5": {
+    "gate_mean": 0.5071430206298828,
+    "gate_p50": 0.5,
+    "gate_p95": 0.5040456652641296,
+    "risky_acceptance_rms": 0.665935973661737,
+    "full_safe_difference_ratio": 0.4076485138275555,
+    "full_residual_rms": 0.055573322998926845,
+    "guard": 1.0,
+    "fast_path": 0.0,
+    "scalar_side_error": 0.5846714299584317,
+    "related_rms": 0.0031104855036946863,
+    "related_ratio": 4.4370295965564095,
+    "difference_rms_ratio": 0.08435050356057558
+  },
+  "0.75": {
+    "gate_mean": 0.7535715103149414,
+    "gate_p50": 0.75,
+    "gate_p95": 0.7520228624343872,
+    "risky_acceptance_rms": 0.8284398663284197,
+    "full_safe_difference_ratio": 0.4076485138275555,
+    "full_residual_rms": 0.055573322998926845,
+    "guard": 1.0,
+    "fast_path": 0.0,
+    "scalar_side_error": 0.5846714299584317,
+    "related_rms": 0.0007577148555581443,
+    "related_ratio": 1.0808612468595362,
+    "difference_rms_ratio": 0.03052268190716768
+  },
+  "0.9": {
+    "gate_mean": 0.9014286398887634,
+    "gate_p50": 0.8999999761581421,
+    "gate_p95": 0.900809109210968,
+    "risky_acceptance_rms": 0.9306038476567297,
+    "full_safe_difference_ratio": 0.4076485138275555,
+    "full_residual_rms": 0.055573322998926845,
+    "guard": 1.0,
+    "fast_path": 0.0,
+    "scalar_side_error": 0.5846714299584317,
+    "related_rms": 0.0006975508777632229,
+    "related_ratio": 0.9950388407414104,
+    "difference_rms_ratio": 0.011152105819020954
+  },
+  "0.95": {
+    "gate_mean": 0.9507141709327698,
+    "gate_p50": 0.949999988079071,
+    "gate_p95": 0.9504045248031616,
+    "risky_acceptance_rms": 0.9651916014081772,
+    "full_safe_difference_ratio": 0.4076485138275555,
+    "full_residual_rms": 0.055573322998926845,
+    "guard": 1.0,
+    "fast_path": 0.0,
+    "scalar_side_error": 0.5846714299584317,
+    "related_rms": 0.0006998930102440218,
+    "related_ratio": 0.9983798340120804,
+    "difference_rms_ratio": 0.0056442863164294
+  },
+  "0.98": {
+    "gate_mean": 0.9802857041358948,
+    "gate_p50": 0.9800000190734863,
+    "gate_p95": 0.9801618456840515,
+    "risky_acceptance_rms": 0.9860516668347548,
+    "full_safe_difference_ratio": 0.4076485138275555,
+    "full_residual_rms": 0.055573322998926845,
+    "guard": 1.0,
+    "fast_path": 0.0,
+    "scalar_side_error": 0.5846714299584317,
+    "related_rms": 0.0007012525151504402,
+    "related_ratio": 1.0003191336806616,
+    "difference_rms_ratio": 0.0026755940247033786
+  }
+}
