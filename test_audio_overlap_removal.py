@@ -9,28 +9,39 @@ import numpy as np
 import scipy.signal
 import soundfile as sf
 
-from real_reference_cancel import (
+from audio_overlap_removal import (
+    AlignmentSegment,
+    cancellation_profile,
+    discover_alignment_segments,
+    process_audio,
+    remove_reference,
+    scan_reference,
+)
+from audio_overlap_removal.alignment import (
     _align_reference,
-    _atomic_soundfile,
-    _audio_channel_count,
     _best_scaled_match,
-    _bounded_ordered_map,
+    _GlobalMatcher,
+)
+from audio_overlap_removal.cancellation import (
     _cancel_chunk,
     _complex_reference_cancel,
-    _decode_stereo,
     _estimate_complex_transfer,
     _estimate_gain_envelope,
-    _GlobalMatcher,
+)
+from audio_overlap_removal.cli import _build_parser, _run_cli
+from audio_overlap_removal.media import (
+    _atomic_soundfile,
+    _audio_channel_count,
+    _decode_stereo,
     _output_settings,
     _paths_refer_to_same_file,
     _processing_channel_count,
-    cancellation_profile,
-    discover_alignment_segments,
-    process_range,
 )
+from audio_overlap_removal.models import _clip_alignment_segments
+from audio_overlap_removal.parallel import _bounded_ordered_map
 
 
-class RealReferenceCancelTests(unittest.TestCase):
+class AudioOverlapRemovalTests(unittest.TestCase):
     def test_atomic_output_preserves_existing_file_after_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory, "clean.wav")
@@ -63,32 +74,175 @@ class RealReferenceCancelTests(unittest.TestCase):
             equivalent = Path(directory, ".", "input.wav")
             self.assertTrue(_paths_refer_to_same_file(media, equivalent))
 
-    def test_process_range_rejects_an_input_as_output(self) -> None:
+    def test_process_audio_rejects_an_input_as_output(self) -> None:
         with self.assertRaisesRegex(ValueError, "mixture input"):
-            process_range(
+            process_audio(
                 "mixture.wav",
                 "reference.wav",
                 "mixture.wav",
-                start_sec=0.0,
-                duration_sec=1.0,
-                offset_sec=0.0,
+                alignment_segments=[],
             )
 
-    def test_process_range_validates_time_and_chunk_options(self) -> None:
-        cases = (
-            {"start_sec": -1.0, "duration_sec": 1.0, "chunk_sec": 1.0},
-            {"start_sec": 0.0, "duration_sec": 0.0, "chunk_sec": 1.0},
-            {"start_sec": 0.0, "duration_sec": 1.0, "chunk_sec": 0.0},
+    def test_process_audio_validates_chunk_option(self) -> None:
+        with self.assertRaisesRegex(ValueError, "chunk_sec"):
+            process_audio(
+                "mixture.wav",
+                "reference.wav",
+                "output.flac",
+                alignment_segments=[],
+                chunk_sec=0.0,
+            )
+
+    def test_process_audio_rejects_non_finite_expert_controls(self) -> None:
+        with patch(
+            "audio_overlap_removal.pipeline._media_duration",
+            return_value=1.0,
+        ):
+            for option in (
+                "context_sec",
+                "search_sec",
+                "cleanup_strength",
+                "center_cleanup_strength",
+            ):
+                with self.subTest(option=option), self.assertRaises(ValueError):
+                    process_audio(
+                        "mixture.wav",
+                        "reference.wav",
+                        "output.flac",
+                        alignment_segments=[],
+                        **{option: float("nan")},
+                    )
+
+    def test_cli_uses_start_and_end_as_media_range(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "mixture.wav",
+                "reference.wav",
+                "output.flac",
+                "--start",
+                "120",
+                "--end",
+                "360",
+            ]
         )
-        for options in cases:
-            with self.subTest(options=options), self.assertRaises(ValueError):
-                process_range(
-                    "mixture.wav",
-                    "reference.wav",
-                    "output.flac",
-                    offset_sec=0.0,
-                    **options,
-                )
+
+        self.assertEqual(args.start, 120.0)
+        self.assertEqual(args.end, 360.0)
+        self.assertEqual(args.strength, 1.0)
+        self.assertFalse(hasattr(args, "offset"))
+        self.assertFalse(hasattr(args, "duration"))
+
+    def test_clipped_segment_preserves_offset_slope(self) -> None:
+        segment = AlignmentSegment(
+            mixture_start=10.0,
+            mixture_end=30.0,
+            offset_sec=4.0,
+            median_score=0.8,
+            offset_slope=0.01,
+        )
+
+        clipped = _clip_alignment_segments([segment], 15.0, 20.0)
+
+        self.assertEqual(len(clipped), 1)
+        self.assertEqual(clipped[0].mixture_start, 15.0)
+        self.assertEqual(clipped[0].mixture_end, 20.0)
+        for timestamp in (15.0, 17.5, 20.0):
+            self.assertAlmostEqual(
+                clipped[0].offset_at(timestamp),
+                segment.offset_at(timestamp),
+            )
+
+    def test_cli_forwards_media_range_to_high_level_api(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "mixture.wav",
+                "reference.wav",
+                "output.flac",
+                "--start",
+                "120",
+                "--end",
+                "360",
+            ]
+        )
+        with patch("audio_overlap_removal.cli.remove_reference") as remove:
+            _run_cli(args)
+
+        remove.assert_called_once_with(
+            "mixture.wav",
+            "reference.wav",
+            "output.flac",
+            start=120.0,
+            end=360.0,
+            chunk_sec=30.0,
+            strength=1.0,
+            cleanup_strength=None,
+            center_strength=None,
+            center_cleanup_strength=None,
+            silence_cleanup_strength=None,
+            adaptive_time_warp=True,
+            sr=48_000,
+            workers=1,
+        )
+
+    def test_scan_reference_limits_discovery_and_clips_segments(self) -> None:
+        discovered = [AlignmentSegment(100.0, 400.0, 20.0, 0.9)]
+        with (
+            patch(
+                "audio_overlap_removal.pipeline._media_duration",
+                return_value=600.0,
+            ),
+            patch(
+                "audio_overlap_removal.pipeline.discover_alignment_segments",
+                return_value=discovered,
+            ) as discover,
+        ):
+            segments = scan_reference(
+                "mixture.wav",
+                "reference.wav",
+                start=120.0,
+                end=360.0,
+            )
+
+        discover.assert_called_once_with(
+            "mixture.wav",
+            "reference.wav",
+            workers=1,
+            mixture_start_sec=120.0,
+            mixture_duration_sec=240.0,
+        )
+        self.assertEqual(segments[0].mixture_start, 120.0)
+        self.assertEqual(segments[0].mixture_end, 360.0)
+
+    def test_remove_reference_composes_scan_and_processing(self) -> None:
+        segments = [AlignmentSegment(120.0, 360.0, 20.0, 0.9)]
+        with (
+            patch(
+                "audio_overlap_removal.pipeline.scan_reference",
+                return_value=segments,
+            ) as scan,
+            patch("audio_overlap_removal.pipeline.process_audio") as process,
+        ):
+            returned = remove_reference(
+                "mixture.wav",
+                "reference.wav",
+                "output.flac",
+                start=120.0,
+                end=360.0,
+                strength=1.0,
+                workers=2,
+            )
+
+        self.assertIs(returned, segments)
+        scan.assert_called_once_with(
+            "mixture.wav",
+            "reference.wav",
+            start=120.0,
+            end=360.0,
+            workers=2,
+        )
+        self.assertEqual(process.call_args.kwargs["alignment_segments"], segments)
 
     @unittest.skipUnless(
         shutil.which("ffmpeg") and shutil.which("ffprobe"),
@@ -132,12 +286,10 @@ class RealReferenceCancelTests(unittest.TestCase):
             sf.write(mixture, audio, sr)
             sf.write(reference, audio, sr)
 
-            process_range(
+            process_audio(
                 str(mixture),
                 str(reference),
                 str(output),
-                start_sec=0.0,
-                duration_sec=frames / sr,
                 alignment_segments=[],
                 chunk_sec=frames / sr,
                 sr=sr,
@@ -146,6 +298,69 @@ class RealReferenceCancelTests(unittest.TestCase):
 
         self.assertEqual(info.format, "WAV")
         self.assertEqual(info.channels, 1)
+
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"),
+        "FFmpeg is required for the range output integration test.",
+    )
+    def test_only_matched_range_is_changed_in_complete_output(self) -> None:
+        sr = 8_000
+        frames = sr
+        time_axis = np.arange(frames, dtype=np.float32) / sr
+        audio = 0.1 * np.sin(2 * np.pi * 220 * time_axis)
+        diagnostics = {
+            "alignment_score": 1.0,
+            "aligned_start": 0.0,
+            "gain_p05": 1.0,
+            "gain_median": 1.0,
+            "gain_p95": 1.0,
+            "side_corr_median": 1.0,
+            "foreground_guard": 1.0,
+            "side_residual_ratio": 0.0,
+            "cleanup_output_ratio": 0.0,
+        }
+
+        def cancel_to_silence(mixture, *args, **kwargs):
+            return np.zeros(len(mixture), dtype=np.float32), diagnostics.copy()
+
+        with tempfile.TemporaryDirectory() as directory:
+            mixture = Path(directory, "mixture.wav")
+            reference = Path(directory, "reference.wav")
+            output = Path(directory, "clean.wav")
+            sf.write(mixture, audio, sr)
+            sf.write(reference, audio, sr)
+
+            with patch(
+                "audio_overlap_removal.pipeline._cancel_chunk",
+                side_effect=cancel_to_silence,
+            ):
+                process_audio(
+                    str(mixture),
+                    str(reference),
+                    str(output),
+                    alignment_segments=[AlignmentSegment(0.25, 0.50, 0.0, 1.0)],
+                    chunk_sec=1.0,
+                    sr=sr,
+                )
+            source_audio, _ = sf.read(mixture, dtype="float32")
+            output_audio, _ = sf.read(output, dtype="float32")
+
+        np.testing.assert_allclose(
+            output_audio[: int(0.25 * sr)],
+            source_audio[: int(0.25 * sr)],
+            atol=2e-6,
+            rtol=0.0,
+        )
+        np.testing.assert_allclose(
+            output_audio[int(0.50 * sr) :],
+            source_audio[int(0.50 * sr) :],
+            atol=2e-6,
+            rtol=0.0,
+        )
+        self.assertLess(
+            float(np.max(np.abs(output_audio[int(0.30 * sr) : int(0.45 * sr)]))),
+            2e-6,
+        )
 
     def test_bounded_parallel_map_runs_concurrently_in_input_order(
         self,
@@ -392,7 +607,7 @@ class RealReferenceCancelTests(unittest.TestCase):
 
         def discover(workers: int):
             with patch(
-                "real_reference_cancel._decode_mono_low",
+                "audio_overlap_removal.alignment._decode_mono_low",
                 side_effect=decode,
             ):
                 return discover_alignment_segments(
@@ -442,7 +657,7 @@ class RealReferenceCancelTests(unittest.TestCase):
             return reference.copy()
 
         with patch(
-            "real_reference_cancel._decode_mono_low",
+            "audio_overlap_removal.alignment._decode_mono_low",
             side_effect=decode,
         ):
             segments = discover_alignment_segments(

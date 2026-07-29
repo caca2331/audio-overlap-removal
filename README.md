@@ -26,8 +26,8 @@
 - 可并行扫描和处理，输出顺序与单线程一致；
 - 输入解码交给 FFmpeg，输出支持 24-bit FLAC 和 WAV。
 
-当前推荐入口是 `real_reference_cancel.py`，安装后也可直接使用
-`audio-overlap-removal` 命令。
+安装后推荐使用 `audio-overlap-removal` 命令；Python 项目也可以直接导入
+`audio_overlap_removal` 包。
 
 ## 安装
 
@@ -72,50 +72,89 @@ ffprobe -version
 audio-overlap-removal mixture.webm reference.webm clean.flac --strength 1
 ```
 
-不安装命令行入口也可以直接运行：
+在源码目录中也可以通过模块入口运行：
 
 ```bash
-python real_reference_cancel.py \
+python -m audio_overlap_removal \
   mixture.webm reference.webm clean.flac \
   --strength 1
 ```
 
-只处理混合音频从第 300 秒开始的 15 分钟：
+如果只有混合音频的第 300–1200 秒包含参考媒体，只扫描和处理这个范围：
 
 ```bash
 audio-overlap-removal \
   mixture.webm reference.webm clean.flac \
-  --start 300 --duration 900 \
+  --start 300 --end 1200 \
   --strength 1 --workers 4
 ```
 
-已知固定偏移时，可跳过全局扫描。`--offset` 定义为
-“混合时间减参考时间”；例如混合的第 81.533 秒对应参考的第 0 秒：
-
-```bash
-audio-overlap-removal \
-  mixture.webm reference.webm clean.wav \
-  --offset 81.533 \
-  --start 600 --duration 120 \
-  --strength 1
-```
+`--start` 和 `--end` 是 mixture 绝对时间轴上的媒体存在范围，并不是输出
+裁剪范围。输出始终覆盖完整 mixture；范围外、范围内未发现参考匹配以及低
+置信度区间都直接通过，只有可靠匹配到的部分会被重建。
 
 输出路径必须以 `.flac` 或 `.wav` 结尾，也不能与任一输入文件相同。
 
 **推荐从 `--strength 1` 开始试听。** 如果人声损伤明显，再向 `0` 调低；
 如果背景残留仍多，再尝试 `1.25–2`。
 
+## 作为 Python 库调用
+
+大多数调用方只需要使用高层函数 `remove_reference()`：
+
+```python
+from audio_overlap_removal import remove_reference
+
+segments = remove_reference(
+    "mixture.webm",
+    "reference.webm",
+    "clean.flac",
+    start=300,
+    end=1200,
+    strength=1,
+    workers=4,
+)
+```
+
+返回值是实际匹配到的 `AlignmentSegment` 列表。输出仍覆盖完整 mixture，
+只有这些匹配区间会被处理。
+
+如果要把扫描与处理拆开，可分别调用：
+
+```python
+from audio_overlap_removal import process_audio, scan_reference
+
+segments = scan_reference(
+    "mixture.webm",
+    "reference.webm",
+    start=300,
+    end=1200,
+    workers=4,
+)
+process_audio(
+    "mixture.webm",
+    "reference.webm",
+    "clean.wav",
+    alignment_segments=segments,
+    strength=1,
+    workers=4,
+)
+```
+
+`scan_reference()` 只负责定位参考媒体，`process_audio()` 只处理传入的匹配
+区间。包根目录导出的名字是稳定公共接口；以下划线开头的函数属于内部实现，
+不保证跨版本兼容。
+
 ## 常用参数
 
 | 参数 | 默认值 | 说明 |
 | --- | ---: | --- |
-| `--offset SECONDS` | 自动扫描 | `C 时间 - B 时间`；指定后跳过全局扫描 |
-| `--start SECONDS` | `0` | 从混合输入的哪个时间开始处理 |
-| `--duration SECONDS` | 到文件末尾 | 输出时长 |
+| `--start SECONDS` | `0` | mixture 中可能包含参考媒体的起点 |
+| `--end SECONDS` | mixture 末尾 | mixture 中可能包含参考媒体的终点 |
 | `--chunk SECONDS` | `30` | 处理块长度 |
 | `--workers N` | `1` | 并行扫描/处理任务数 |
 | `--sample-rate HZ` | `48000` | 解码、处理和输出采样率 |
-| `--strength VALUE` | `0`（推荐显式传入 `1`） | 保真与消除强度的统一控制 |
+| `--strength VALUE` | `1` | 保真与消除强度的统一控制 |
 | `--disable-adaptive-warp` | 关闭 | 禁用经验证的 16 ms 精细时间扭曲 |
 
 `--strength` 没有硬上限：
@@ -164,10 +203,15 @@ audio-overlap-removal \
 
 ### 输出
 
+没有单独的 `--format` 参数；程序根据输出文件扩展名选择格式：
+
 - `.flac`：FLAC 容器，24-bit PCM；
 - `.wav`：WAV 容器，24-bit PCM。
 
 当前不会复制输入的封面、视频、章节或其他元数据，只输出处理后的音频。
+写出期间会在输出目录创建一个隐藏的 `.part` 临时文件；成功关闭后原子替换为
+目标文件，失败时自动删除，从而避免留下半截输出。当前扫描和解码不创建其他
+磁盘临时文件。
 
 ## 工作原理
 
@@ -188,11 +232,11 @@ audio-overlap-removal \
 
 ## 性能建议
 
-- 先用 `--duration 30` 或 `--duration 120` 做短片段试听；
+- 已知媒体只出现在部分时间时，务必用 `--start/--end` 缩小扫描范围；
 - 一般从 `--workers 1` 或 `2` 开始；
 - 内存充足时可尝试 `--workers 4`；
 - worker 数过高通常受内存带宽限制，并会近似按并发块数增加临时内存；
-- 已知偏移时使用 `--offset`，可省去全局扫描。
+- 输出仍会重建完整 mixture，缩小扫描范围不会缩短输出。
 
 默认全局扫描仍需以低采样率解码完整参考音轨。非常长的参考媒体会增加扫描
 时间和内存，但不会以 48 kHz 原始声道布局整体载入。
@@ -202,7 +246,7 @@ audio-overlap-removal \
 运行完整回归测试：
 
 ```bash
-python -m unittest -v test_real_reference_cancel.py
+python -m unittest -v test_audio_overlap_removal.py
 ```
 
 测试覆盖动态增益、暂停、跳转/重放、速度漂移、mono/stereo 路由、多声道
@@ -225,8 +269,15 @@ FFmpeg 下混、WAV/FLAC 输出选择、截断参考和并行结果顺序。
 
 ```text
 audio-overlap-removal/
-├── real_reference_cancel.py       # 当前推荐实现和 CLI
-├── test_real_reference_cancel.py  # 算法与 I/O 回归测试
-├── pyproject.toml                 # 依赖与命令行入口
+├── audio_overlap_removal/
+│   ├── alignment.py       # 参考媒体扫描与时间轴匹配
+│   ├── cancellation.py    # 信号对齐、相消与残留清理
+│   ├── media.py           # FFmpeg 解码、探测和原子写出
+│   ├── models.py          # 公共数据模型与强度配置
+│   ├── parallel.py        # 有界、保序的并行执行
+│   ├── pipeline.py        # 可独立调用的高层处理流程
+│   └── cli.py             # 命令行参数与入口
+├── test_audio_overlap_removal.py  # 算法、模块接口与 I/O 回归测试
+├── pyproject.toml                 # 包配置、依赖与命令行入口
 └── docs/                          # 目标、实验结论和算法审查
 ```

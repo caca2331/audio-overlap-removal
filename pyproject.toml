@@ -15,10 +15,10 @@ dependencies = [
 ]
 
 [project.scripts]
-audio-overlap-removal = "real_reference_cancel:main"
+audio-overlap-removal = "audio_overlap_removal.cli:main"
 
 [tool.setuptools]
-py-modules = ["real_reference_cancel"]
+packages = ["audio_overlap_removal"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
