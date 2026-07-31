@@ -20,23 +20,29 @@ def _estimate_gain_envelope(
     window = max(32, int(round(window_sec * sr)))
     hop = max(16, int(round(hop_sec * sr)))
     centers = np.arange(0, len(mixture_side), hop)
-    gains = np.zeros(len(centers), dtype=np.float64)
-    correlations = np.zeros(len(centers), dtype=np.float64)
-    relative_levels = np.zeros(len(centers), dtype=np.float64)
+    starts = np.maximum(0, centers - window // 2)
+    ends = np.minimum(len(mixture_side), centers + window // 2)
+    mixture64 = mixture_side.astype(np.float64, copy=False)
+    reference64 = reference_side.astype(np.float64, copy=False)
 
-    for index, center in enumerate(centers):
-        start = max(0, center - window // 2)
-        end = min(len(mixture_side), center + window // 2)
-        mix = mixture_side[start:end].astype(np.float64, copy=False)
-        ref = reference_side[start:end].astype(np.float64, copy=False)
-        cross = float(np.dot(mix, ref))
-        ref_energy = float(np.dot(ref, ref))
-        mix_energy = float(np.dot(mix, mix))
-        gains[index] = cross / (ref_energy + 1e-20)
-        correlations[index] = cross / np.sqrt(
-            (mix_energy + 1e-20) * (ref_energy + 1e-20)
-        )
-        relative_levels[index] = np.sqrt((mix_energy + 1e-20) / (ref_energy + 1e-20))
+    def rolling_dot(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+        # Build each prefix sum in place so all overlapping window statistics
+        # are computed in O(samples + windows), rather than one BLAS call per
+        # 50 ms window.
+        cumulative = np.empty(len(left) + 1, dtype=np.float64)
+        cumulative[0] = 0.0
+        np.multiply(left, right, out=cumulative[1:])
+        np.cumsum(cumulative[1:], out=cumulative[1:])
+        return cumulative[ends] - cumulative[starts]
+
+    cross = rolling_dot(mixture64, reference64)
+    ref_energy = rolling_dot(reference64, reference64)
+    mix_energy = rolling_dot(mixture64, mixture64)
+    gains = cross / (ref_energy + 1e-20)
+    correlations = cross / np.sqrt(
+        (mix_energy + 1e-20) * (ref_energy + 1e-20)
+    )
+    relative_levels = np.sqrt((mix_energy + 1e-20) / (ref_energy + 1e-20))
 
     gains = np.clip(gains, 0.0, 1.5)
     confident = correlations >= min_correlation
@@ -119,14 +125,18 @@ def _estimate_complex_transfer(
     mixture: np.ndarray,
     reference: np.ndarray,
     sigma: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray]:
+    *,
+    estimate_coherence: bool = True,
+) -> tuple[np.ndarray, np.ndarray | None]:
     cross = _smooth_complex(mixture * np.conj(reference), sigma)
     reference_power = scipy.ndimage.gaussian_filter(np.abs(reference) ** 2, sigma)
-    mixture_power = scipy.ndimage.gaussian_filter(np.abs(mixture) ** 2, sigma)
     regularizer = 0.01 * np.median(reference_power, axis=1, keepdims=True)
     transfer = cross / (reference_power + regularizer + 1e-14)
     transfer_magnitude = np.abs(transfer)
     transfer *= np.minimum(1.0, 1.5 / (transfer_magnitude + 1e-12))
+    if not estimate_coherence:
+        return transfer, None
+    mixture_power = scipy.ndimage.gaussian_filter(np.abs(mixture) ** 2, sigma)
     coherence = np.clip(
         np.abs(cross) ** 2 / (reference_power * mixture_power + 1e-14),
         0.0,
@@ -160,7 +170,10 @@ def _complex_reference_cancel(
         mixture_mid_stft, reference_mid_stft, sigma=(1.0, 10.0)
     )
     side_transfer, _ = _estimate_complex_transfer(
-        mixture_side_stft, reference_side_stft, sigma=(1.0, 5.0)
+        mixture_side_stft,
+        reference_side_stft,
+        sigma=(1.0, 5.0),
+        estimate_coherence=False,
     )
     scalar_side_error = np.sqrt(
         np.sum(
@@ -230,19 +243,20 @@ def _complex_reference_cancel(
     mid_residual_stft = mixture_mid_stft - predicted_mid_stft
     side_residual_stft = mixture_side_stft - predicted_side_stft
     raw_residual_power = float(np.sum(np.abs(mid_residual_stft) ** 2))
+    power_sigma = (1.5, 3.0)
+    predicted_mid_power: np.ndarray | None = None
 
     if cleanup_strength > 0:
-        sigma = (1.5, 3.0)
-        side_artifact_power = _smooth_power(side_residual_stft, sigma)
-        predicted_mid_power = _smooth_power(predicted_mid_stft, sigma)
-        predicted_side_power = _smooth_power(predicted_side_stft, sigma)
+        side_artifact_power = _smooth_power(side_residual_stft, power_sigma)
+        predicted_mid_power = _smooth_power(predicted_mid_stft, power_sigma)
+        predicted_side_power = _smooth_power(predicted_side_stft, power_sigma)
         mid_side_ratio = np.clip(
             predicted_mid_power / (predicted_side_power + 1e-14),
             0.1,
             12.0,
         )
         estimated_artifact_power = side_artifact_power * mid_side_ratio
-        mid_power = _smooth_power(mid_residual_stft, sigma)
+        mid_power = _smooth_power(mid_residual_stft, power_sigma)
         cleanup_gain = np.sqrt(
             np.clip(
                 1.0 - cleanup_strength * estimated_artifact_power / (mid_power + 1e-14),
@@ -259,9 +273,9 @@ def _complex_reference_cancel(
         # reference voice, so attenuate only bins where the reference itself
         # is active and center-dominant. This intentionally trades a small
         # amount of double-talk transparency for less media-vocal residue.
-        sigma = (1.5, 3.0)
-        residual_power = _smooth_power(mid_residual_stft, sigma)
-        predicted_power = _smooth_power(predicted_mid_stft, sigma)
+        residual_power = _smooth_power(mid_residual_stft, power_sigma)
+        if predicted_mid_power is None:
+            predicted_mid_power = _smooth_power(predicted_mid_stft, power_sigma)
         center_aggression = np.clip(center_cleanup_strength - 1.0, 0.0, 1.0)
         activity_scale = 1.5 - 0.75 * center_aggression
         center_activity = np.clip(
@@ -280,7 +294,8 @@ def _complex_reference_cancel(
             1.0,
         )
         media_dominance = np.power(
-            predicted_power / (predicted_power + residual_power + 1e-14),
+            predicted_mid_power
+            / (predicted_mid_power + residual_power + 1e-14),
             1.0 / (1.0 + center_aggression),
         )
         center_mask = center_activity * center_dominance * media_dominance
@@ -300,15 +315,15 @@ def _complex_reference_cancel(
         # unexplained-energy ratio and protects the entire nearby time span.
         # When the mixture is well explained by the removable reference, the
         # remaining phase-incoherent ghost can be suppressed more aggressively.
-        sigma = (1.5, 3.0)
-        residual_power = _smooth_power(mid_residual_stft, sigma)
-        predicted_power = _smooth_power(predicted_mid_stft, sigma)
+        residual_power = _smooth_power(mid_residual_stft, power_sigma)
+        if predicted_mid_power is None:
+            predicted_mid_power = _smooth_power(predicted_mid_stft, power_sigma)
         frequencies = np.fft.rfftfreq(2_048, d=1.0 / sr)
         foreground_band = (frequencies >= 100.0) & (
             frequencies <= min(8_000.0, 0.48 * sr)
         )
         unexplained_frame = np.sum(residual_power[foreground_band], axis=0)
-        explained_frame = np.sum(predicted_power[foreground_band], axis=0)
+        explained_frame = np.sum(predicted_mid_power[foreground_band], axis=0)
         unexplained_ratio = unexplained_frame / (
             unexplained_frame + explained_frame + 1e-14
         )
@@ -329,7 +344,8 @@ def _complex_reference_cancel(
         )
         broad_center_dominance = np.clip((0.50 - side_support) / 0.50, 0.0, 1.0)
         media_dominance = np.sqrt(
-            predicted_power / (predicted_power + residual_power + 1e-14)
+            predicted_mid_power
+            / (predicted_mid_power + residual_power + 1e-14)
         )
         silence_mask = (
             foreground_absence[np.newaxis, :]

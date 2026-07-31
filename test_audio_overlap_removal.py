@@ -555,6 +555,35 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         )
         self.assertGreater(float(np.median(estimated[3 * sr :])), 0.65)
 
+    def test_gain_envelope_correlations_match_direct_windows(self) -> None:
+        sr = 2_000
+        rng = np.random.default_rng(102)
+        reference = rng.standard_normal(3 * sr).astype(np.float32)
+        mixture = (0.6 * reference + 0.2 * rng.standard_normal(3 * sr)).astype(
+            np.float32
+        )
+
+        _, correlations = _estimate_gain_envelope(mixture, reference, sr)
+
+        window = int(round(0.25 * sr))
+        hop = int(round(0.05 * sr))
+        expected = []
+        for center in np.arange(0, len(mixture), hop):
+            start = max(0, center - window // 2)
+            end = min(len(mixture), center + window // 2)
+            mix = mixture[start:end].astype(np.float64)
+            ref = reference[start:end].astype(np.float64)
+            cross = np.dot(mix, ref)
+            expected.append(
+                cross
+                / np.sqrt(
+                    (np.dot(mix, mix) + 1e-20)
+                    * (np.dot(ref, ref) + 1e-20)
+                )
+            )
+
+        np.testing.assert_allclose(correlations, expected, rtol=1e-10, atol=1e-12)
+
     def test_local_time_warp_tracks_small_speed_jitter(self) -> None:
         sr = 8_000
         frames = 6 * sr
@@ -1170,6 +1199,12 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         transfer, coherence = _estimate_complex_transfer(
             mixture, reference, sigma=(1.0, 5.0)
         )
+        transfer_only, omitted_coherence = _estimate_complex_transfer(
+            mixture,
+            reference,
+            sigma=(1.0, 5.0),
+            estimate_coherence=False,
+        )
         reconstruction = transfer * reference
         relative_error = np.sqrt(
             np.mean(np.abs(mixture - reconstruction) ** 2)
@@ -1178,6 +1213,8 @@ class AudioOverlapRemovalTests(unittest.TestCase):
 
         self.assertLess(relative_error, 0.02)
         self.assertGreater(float(np.median(coherence)), 0.98)
+        np.testing.assert_array_equal(transfer_only, transfer)
+        self.assertIsNone(omitted_coherence)
 
     def test_stereo_side_control_recovers_centered_target(self) -> None:
         sr = 16_000
