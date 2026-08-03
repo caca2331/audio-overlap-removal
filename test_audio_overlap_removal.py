@@ -1,3 +1,4 @@
+import json
 import shutil
 import tempfile
 import threading
@@ -21,6 +22,7 @@ from audio_overlap_removal.alignment import (
     _align_reference,
     _best_scaled_match,
     _GlobalMatcher,
+    _ReferenceAlignment,
 )
 from audio_overlap_removal.cancellation import (
     _cancel_chunk,
@@ -44,6 +46,11 @@ from audio_overlap_removal.media import (
 )
 from audio_overlap_removal.models import _clip_alignment_segments
 from audio_overlap_removal.parallel import _bounded_ordered_map
+from audio_overlap_removal.pipeline import (
+    _accepts_cancellation,
+    _fit_offset_trajectory,
+    _merge_passthrough_spans,
+)
 
 
 class AudioOverlapRemovalTests(unittest.TestCase):
@@ -172,25 +179,101 @@ class AudioOverlapRemovalTests(unittest.TestCase):
                 "360",
             ]
         )
-        with patch("audio_overlap_removal.cli.remove_reference") as remove:
+        segments = [AlignmentSegment(120.0, 360.0, 20.0, 0.9)]
+        with (
+            patch(
+                "audio_overlap_removal.cli.scan_reference",
+                return_value=segments,
+            ) as scan,
+            patch("audio_overlap_removal.cli.process_audio") as process,
+        ):
             _run_cli(args)
 
-        remove.assert_called_once_with(
+        scan.assert_called_once_with(
+            "mixture.wav",
+            "reference.wav",
+            start=120.0,
+            end=360.0,
+            workers=4,
+        )
+        process.assert_called_once_with(
             "mixture.wav",
             "reference.wav",
             "output.flac",
-            start=120.0,
-            end=360.0,
+            alignment_segments=segments,
             chunk_sec=30.0,
+            search_sec=0.25,
             strength=1.0,
             cleanup_strength=None,
             center_strength=None,
             center_cleanup_strength=None,
             silence_cleanup_strength=None,
             adaptive_time_warp=True,
+            momentum=True,
+            output_start=0.0,
+            output_end=None,
+            report_path=None,
             sr=48_000,
             workers=4,
         )
+
+    def test_cli_scan_only_writes_segments_and_skips_processing(self) -> None:
+        parser = _build_parser()
+        segment = AlignmentSegment(
+            120.0,
+            360.0,
+            20.0,
+            0.9,
+            anchor_times=(120.0, 240.0),
+            anchor_offsets=(20.0, 20.5),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            segments_path = str(Path(directory, "segments.json"))
+            args = parser.parse_args(
+                [
+                    "mixture.wav",
+                    "reference.wav",
+                    "--scan-only",
+                    "--segments-out",
+                    segments_path,
+                ]
+            )
+            with (
+                patch(
+                    "audio_overlap_removal.cli.scan_reference",
+                    return_value=[segment],
+                ),
+                patch("audio_overlap_removal.cli.process_audio") as process,
+            ):
+                _run_cli(args)
+            process.assert_not_called()
+
+            reload_args = parser.parse_args(
+                [
+                    "mixture.wav",
+                    "reference.wav",
+                    "output.flac",
+                    "--segments",
+                    segments_path,
+                ]
+            )
+            with (
+                patch("audio_overlap_removal.cli.scan_reference") as scan,
+                patch("audio_overlap_removal.cli.process_audio") as process,
+            ):
+                _run_cli(reload_args)
+
+        scan.assert_not_called()
+        # A round trip through the file must preserve the anchor trajectory,
+        # not just the headline offset.
+        self.assertEqual(process.call_args.kwargs["alignment_segments"], [segment])
+
+    def test_cli_requires_an_output_path_unless_scanning_only(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["mixture.wav", "reference.wav"])
+
+        with self.assertRaisesRegex(ValueError, "output path is required"):
+            _run_cli(args)
 
     def test_scan_reference_limits_discovery_and_clips_segments(self) -> None:
         discovered = [AlignmentSegment(100.0, 400.0, 20.0, 0.9)]
@@ -612,10 +695,12 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         foreground = (0.02 * np.sin(2 * np.pi * 190 * sample / sr)).astype(np.float32)
         mixture = warped + foreground[:, np.newaxis]
 
-        aligned, score, _ = _align_reference(mixture, reference, sr)
+        alignment = _align_reference(mixture, reference, sr)
+        aligned = alignment.reference
         relative_error = np.sqrt(np.mean((aligned - warped) ** 2) / np.mean(warped**2))
 
-        self.assertGreater(score, 0.7)
+        self.assertTrue(alignment.covered)
+        self.assertGreater(alignment.score, 0.7)
         self.assertLess(relative_error, 0.12)
 
     def test_adaptive_short_anchors_improve_steady_rate_drift(self) -> None:
@@ -644,18 +729,18 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         ).astype(np.float32)
         diagnostics: dict[str, float] = {}
 
-        aligned, _, _ = _align_reference(
+        aligned = _align_reference(
             warped + foreground[:, np.newaxis],
             reference,
             sr,
             diagnostics,
-        )
-        long_aligned, _, _ = _align_reference(
+        ).reference
+        long_aligned = _align_reference(
             warped + foreground[:, np.newaxis],
             reference,
             sr,
             adaptive_time_warp=False,
-        )
+        ).reference
         relative_error = np.sqrt(np.mean((aligned - warped) ** 2) / np.mean(warped**2))
         long_error = np.sqrt(np.mean((long_aligned - warped) ** 2) / np.mean(warped**2))
 
@@ -692,12 +777,12 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         ).astype(np.float32)
         diagnostics: dict[str, float] = {}
 
-        aligned, _, _ = _align_reference(
+        aligned = _align_reference(
             warped + foreground[:, np.newaxis],
             reference,
             sr,
             diagnostics,
-        )
+        ).reference
         relative_error = np.sqrt(np.mean((aligned - warped) ** 2) / np.mean(warped**2))
 
         self.assertEqual(diagnostics["short_warp_considered"], 1.0)
@@ -1555,6 +1640,360 @@ class AudioOverlapRemovalTests(unittest.TestCase):
                 )
                 self.assertEqual(output.ndim, 1)
                 self.assertLess(relative_error, 0.10)
+
+
+def _write_drifting_fixture(
+    directory: Path,
+    sr: int,
+    true_offset: float,
+) -> tuple[str, str, np.ndarray, np.ndarray]:
+    """Write a mixture whose matched span carries a known reference offset."""
+    rng = np.random.default_rng(1234)
+    reference = scipy.signal.lfilter(
+        [1.0],
+        [1.0, -0.85],
+        rng.standard_normal((30 * sr, 2)),
+        axis=0,
+    ).astype(np.float32)
+    # Keep peaks well inside full scale: the 24-bit output would otherwise
+    # clip and stop being a bit-exact copy of a passed-through chunk.
+    reference *= 0.12 / np.std(reference)
+    frames = 24 * sr
+    time = np.arange(frames) / sr
+    target = (0.05 * np.sin(2.0 * np.pi * 180.0 * time)).astype(np.float32)
+    mixture = np.column_stack([target, target])
+    start = int(round(4.0 * sr))
+    end = int(round(20.0 * sr))
+    reference_start = int(round((4.0 - true_offset) * sr))
+    mixture[start:end] += 0.8 * reference[
+        reference_start : reference_start + (end - start)
+    ]
+    mixture_path = Path(directory, "mixture.wav")
+    reference_path = Path(directory, "reference.wav")
+    sf.write(mixture_path, mixture, sr, subtype="FLOAT")
+    sf.write(reference_path, reference, sr, subtype="FLOAT")
+    return str(mixture_path), str(reference_path), mixture, target
+
+
+class ChunkOffsetMomentumTests(unittest.TestCase):
+    def test_offset_trajectory_replaces_the_single_slope_model(self) -> None:
+        segment = AlignmentSegment(
+            mixture_start=0.0,
+            mixture_end=100.0,
+            offset_sec=5.0,
+            median_score=0.9,
+            offset_slope=0.0,
+            anchor_times=(0.0, 50.0, 100.0),
+            anchor_offsets=(5.0, 5.4, 5.2),
+        )
+
+        self.assertAlmostEqual(segment.offset_at(25.0), 5.2)
+        self.assertAlmostEqual(segment.offset_at(75.0), 5.3)
+        # The straight-line model would predict 5.0 everywhere, i.e. 400ms off
+        # in the middle - far more than a chunk-local search buffer.
+        self.assertAlmostEqual(segment.offset_at(50.0), 5.4)
+
+        clipped = _clip_alignment_segments([segment], 40.0, 60.0)[0]
+        for timestamp in (40.0, 50.0, 60.0):
+            self.assertAlmostEqual(
+                clipped.offset_at(timestamp),
+                segment.offset_at(timestamp),
+            )
+
+    def test_discovery_keeps_the_anchor_trajectory(self) -> None:
+        sr = 500
+        rng = np.random.default_rng(3141)
+        reference = rng.standard_normal(20 * sr).astype(np.float32)
+        mixture = reference.copy()
+
+        def decode(path, requested_sr, start_sec, duration_sec):
+            return mixture.copy() if path == "mixture" else reference.copy()
+
+        with patch(
+            "audio_overlap_removal.alignment._decode_mono_low",
+            side_effect=decode,
+        ):
+            segments = discover_alignment_segments(
+                "mixture",
+                "reference",
+                align_sr=sr,
+                global_step_sec=1.0,
+                query_sec=1.0,
+                local_step_sec=0.5,
+                min_score=0.5,
+                workers=1,
+            )
+
+        self.assertTrue(segments)
+        self.assertGreater(len(segments[0].anchor_times), 3)
+        self.assertEqual(
+            len(segments[0].anchor_times),
+            len(segments[0].anchor_offsets),
+        )
+
+    def test_prior_resolves_a_repeated_passage(self) -> None:
+        sr = 8_000
+        rng = np.random.default_rng(2718)
+        passage = scipy.signal.lfilter(
+            [1.0],
+            [1.0, -0.88],
+            rng.standard_normal((4 * sr, 2)),
+            axis=0,
+        ).astype(np.float32)
+        passage *= 0.2 / np.std(passage)
+        foreground = (
+            0.3
+            * scipy.signal.lfilter([1.0], [1.0, -0.7], rng.standard_normal(4 * sr))
+        ).astype(np.float32)
+        mixture = passage + foreground[:, np.newaxis]
+        pad = np.zeros((sr, 2), dtype=np.float32)
+        gap = (0.01 * rng.standard_normal((sr, 2))).astype(np.float32)
+        # The decoy repeat carries the foreground too, so an unconstrained
+        # search prefers it over the passage the chunk actually came from.
+        reference_search = np.vstack([pad, passage, gap, mixture])
+        true_start = len(pad)
+        decoy_start = len(pad) + len(passage) + len(gap)
+
+        unconstrained = _align_reference(mixture, reference_search, sr)
+        guided = _align_reference(
+            mixture,
+            reference_search,
+            sr,
+            predicted_start=float(true_start),
+            search_radius_sec=0.25,
+        )
+
+        self.assertAlmostEqual(unconstrained.start, decoy_start, delta=0.01 * sr)
+        self.assertAlmostEqual(guided.start, true_start, delta=0.01 * sr)
+        self.assertTrue(guided.covered)
+
+    def test_uncovered_alignment_passes_through_instead_of_raising(self) -> None:
+        sr = 8_000
+        rng = np.random.default_rng(999)
+        mixture = rng.standard_normal((sr, 2)).astype(np.float32)
+        reference_search = rng.standard_normal((2 * sr, 2)).astype(np.float32)
+
+        def uncovered(*args, **kwargs):
+            diagnostics = args[3] if len(args) > 3 else kwargs.get("diagnostics")
+            if diagnostics is not None:
+                diagnostics["coverage_deficit_start_sec"] = 0.0
+                diagnostics["coverage_deficit_end_sec"] = 0.4
+            return _ReferenceAlignment(None, 0.9, 0, False)
+
+        with patch(
+            "audio_overlap_removal.cancellation._align_reference",
+            side_effect=uncovered,
+        ):
+            output, diagnostics = _cancel_chunk(
+                mixture,
+                reference_search,
+                sr,
+                cleanup_strength=1.0,
+            )
+
+        np.testing.assert_array_equal(output, 0.5 * (mixture[:, 0] + mixture[:, 1]))
+        self.assertEqual(diagnostics["coverage_passthrough"], 1.0)
+        self.assertEqual(diagnostics["coverage_deficit_end_sec"], 0.4)
+
+    def test_trajectory_fit_rejects_outliers_and_fills_gaps(self) -> None:
+        fitted = _fit_offset_trajectory(
+            [
+                (0, 1.0, 0.9),
+                (1, 1.1, 0.9),
+                (2, 1.2, 0.9),
+                (3, 9.9, 0.9),
+                (4, 1.4, 0.9),
+                (5, None, 0.0),
+            ]
+        )
+
+        self.assertAlmostEqual(fitted[0].offset, 1.0)
+        self.assertAlmostEqual(fitted[3].offset, 1.3)
+        self.assertAlmostEqual(fitted[5].offset, 1.4)
+        self.assertTrue(fitted[0].confident)
+        # A borrowed offset must not also lend its neighbours' confidence.
+        self.assertFalse(fitted[3].confident)
+        self.assertFalse(fitted[5].confident)
+
+    def test_trajectory_fit_gives_up_without_confident_probes(self) -> None:
+        self.assertEqual(
+            _fit_offset_trajectory([(0, 1.0, 0.1), (1, None, 0.0)]),
+            {},
+        )
+
+    def test_cancellation_needs_two_of_three_votes(self) -> None:
+        sr = 8_000
+        quiet_but_removing = {
+            "alignment_score": 0.05,
+            "aligned_start": 1_000.0,
+            "control_reduction_db": 4.0,
+        }
+        nothing_removed = {
+            "alignment_score": 0.05,
+            "aligned_start": 1_000.0,
+            "control_reduction_db": 0.1,
+        }
+        strong_but_runaway = {
+            "alignment_score": 0.90,
+            "aligned_start": 40_000.0,
+            "control_reduction_db": 9.0,
+        }
+
+        # A low correlation score no longer vetoes a chunk on its own: the
+        # momentum probe and the measured reduction can carry it.
+        self.assertTrue(
+            _accepts_cancellation(quiet_but_removing, 1_100.0, sr, 0.5, True)
+        )
+        self.assertFalse(
+            _accepts_cancellation(quiet_but_removing, 1_100.0, sr, 0.5, False)
+        )
+        self.assertFalse(
+            _accepts_cancellation(nothing_removed, 1_100.0, sr, 0.5, True)
+        )
+        # Landing far outside the predicted window is a veto, not one vote.
+        self.assertFalse(
+            _accepts_cancellation(strong_but_runaway, 1_100.0, sr, 0.5, True)
+        )
+        # An outright strong correlation is sufficient on its own.
+        self.assertTrue(
+            _accepts_cancellation(
+                {**nothing_removed, "alignment_score": 0.90},
+                1_100.0,
+                sr,
+                0.5,
+                False,
+            )
+        )
+        self.assertFalse(
+            _accepts_cancellation(
+                {**quiet_but_removing, "coverage_passthrough": 1.0},
+                1_100.0,
+                sr,
+                0.5,
+                True,
+            )
+        )
+
+    def test_passthrough_spans_merge_when_contiguous(self) -> None:
+        self.assertEqual(
+            _merge_passthrough_spans([(0.0, 30.0), (30.0, 60.0), (90.0, 120.0)]),
+            [(0.0, 60.0), (90.0, 120.0)],
+        )
+
+
+@unittest.skipUnless(
+    shutil.which("ffmpeg") and shutil.which("ffprobe"),
+    "FFmpeg is required for the offset recovery integration tests.",
+)
+class OffsetRecoveryIntegrationTests(unittest.TestCase):
+    sr = 8_000
+    true_offset = 2.0
+    matched = (4.0, 20.0)
+
+    def run_pipeline(
+        self,
+        declared_offset: float,
+        *,
+        momentum: bool,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        with tempfile.TemporaryDirectory() as directory:
+            mixture_path, reference_path, mixture, target = _write_drifting_fixture(
+                Path(directory), self.sr, self.true_offset
+            )
+            output = Path(directory, "clean.wav")
+            process_audio(
+                mixture_path,
+                reference_path,
+                str(output),
+                alignment_segments=[
+                    AlignmentSegment(*self.matched, declared_offset, 0.9)
+                ],
+                chunk_sec=4.0,
+                search_sec=0.25,
+                strength=0.0,
+                momentum=momentum,
+                sr=self.sr,
+                workers=2,
+            )
+            written, _ = sf.read(output, dtype="float32")
+        return written, mixture, target
+
+    def matched_slice(self, audio: np.ndarray) -> np.ndarray:
+        start = int(round((self.matched[0] + 1.0) * self.sr))
+        end = int(round((self.matched[1] - 1.0) * self.sr))
+        return audio[start:end]
+
+    def residual_ratio(self, written, mixture, target) -> float:
+        """How much of the removable reference survives in the matched span."""
+        stereo_target = np.column_stack([target, target])
+        residual = self.matched_slice(written) - self.matched_slice(stereo_target)
+        removable = self.matched_slice(mixture) - self.matched_slice(stereo_target)
+        return float(np.sqrt(np.mean(residual**2) / np.mean(removable**2)))
+
+    def assert_reference_removed(self, written, mixture, target) -> None:
+        self.assertLess(self.residual_ratio(written, mixture, target), 0.25)
+
+    def test_momentum_recovers_a_wrong_segment_offset(self) -> None:
+        written, mixture, target = self.run_pipeline(
+            self.true_offset + 0.8,
+            momentum=True,
+        )
+
+        self.assert_reference_removed(written, mixture, target)
+
+    def test_widened_retry_recovers_without_momentum(self) -> None:
+        written, mixture, target = self.run_pipeline(
+            self.true_offset + 0.8,
+            momentum=False,
+        )
+
+        self.assert_reference_removed(written, mixture, target)
+
+    def test_output_range_writes_only_the_requested_span(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            mixture_path, reference_path, mixture, target = _write_drifting_fixture(
+                Path(directory), self.sr, self.true_offset
+            )
+            output = Path(directory, "clean.flac")
+            report = Path(directory, "report.jsonl")
+            process_audio(
+                mixture_path,
+                reference_path,
+                str(output),
+                alignment_segments=[
+                    AlignmentSegment(*self.matched, self.true_offset, 0.9)
+                ],
+                chunk_sec=4.0,
+                strength=0.0,
+                output_start=self.matched[0],
+                output_end=self.matched[1],
+                report_path=str(report),
+                sr=self.sr,
+                workers=2,
+            )
+            written, _ = sf.read(output, dtype="float32")
+            records = [
+                json.loads(line) for line in report.read_text().splitlines() if line
+            ]
+
+        self.assertEqual(len(written), int(round(16.0 * self.sr)))
+        self.assertEqual(len(records), 4)
+        self.assertEqual(records[0]["start_sec"], self.matched[0])
+        self.assertEqual(records[-1]["end_sec"], self.matched[1])
+        self.assertEqual({record["mode"] for record in records}, {"cancelled"})
+        self.assertGreater(records[0]["control_reduction_db"], 1.0)
+
+    def test_unrecoverable_offset_passes_through_the_whole_file(self) -> None:
+        written, mixture, target = self.run_pipeline(
+            self.true_offset + 8.0,
+            momentum=True,
+        )
+
+        # No chunk may abort the run, and an unmatched chunk must reach the
+        # output untouched rather than half-cancelled.
+        self.assertEqual(len(written), len(mixture))
+        self.assertGreater(self.residual_ratio(written, mixture, target), 0.99)
+        np.testing.assert_allclose(written, mixture, atol=2e-6, rtol=0.0)
 
 
 if __name__ == "__main__":

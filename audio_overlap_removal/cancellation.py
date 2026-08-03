@@ -438,6 +438,43 @@ def _mono_reference_cancel(
     return output, cleanup_ratio
 
 
+def _passthrough_diagnostics(reason: str, **extra: float) -> dict[str, float]:
+    """Describe a chunk that is written unmodified inside a matched segment."""
+    return {
+        "alignment_score": 0.0,
+        "aligned_start": 0.0,
+        "gain_p05": 0.0,
+        "gain_median": 0.0,
+        "gain_p95": 0.0,
+        "side_corr_median": 0.0,
+        "foreground_guard": 0.0,
+        "side_residual_ratio": 1.0,
+        "cleanup_output_ratio": 1.0,
+        "control_reduction_db": 0.0,
+        reason: 1.0,
+        **extra,
+    }
+
+
+def _control_reduction_db(
+    control_mixture: np.ndarray,
+    control_reference: np.ndarray,
+    gain: np.ndarray,
+) -> float:
+    """Measure how much energy the aligned reference actually removes.
+
+    This is the cheap post-cancellation evidence that a match is real: it uses
+    only the scalar envelope, no STFT, and unlike the correlation score it
+    cannot be high while the subtraction itself achieves nothing.
+    """
+    mixture_energy = float(np.dot(control_mixture, control_mixture))
+    if mixture_energy <= 1e-20:
+        return 0.0
+    residual = control_mixture - gain * control_reference
+    residual_energy = float(np.dot(residual, residual))
+    return 10.0 * float(np.log10((mixture_energy + 1e-20) / (residual_energy + 1e-20)))
+
+
 def _cancel_chunk(
     mixture: np.ndarray,
     reference_search: np.ndarray,
@@ -450,6 +487,8 @@ def _cancel_chunk(
     mixture_channels: int = 2,
     reference_channels: int = 2,
     output_channels: int = 1,
+    predicted_start: float | None = None,
+    search_radius_sec: float = 0.25,
 ) -> tuple[np.ndarray, dict[str, float]]:
     if mixture_channels not in (1, 2):
         raise ValueError("mixture_channels must be 1 or 2.")
@@ -466,27 +505,36 @@ def _cancel_chunk(
         # This occurs naturally when a discovered segment reaches beyond a
         # truncated reference. Treat it as a no-match region instead of passing
         # an empty/short vector into the alignment filters.
-        return _passthrough_channels(mixture, output_channels), {
-            "alignment_score": 0.0,
-            "aligned_start": 0.0,
-            "gain_p05": 0.0,
-            "gain_median": 0.0,
-            "gain_p95": 0.0,
-            "side_corr_median": 0.0,
-            "foreground_guard": 0.0,
-            "side_residual_ratio": 1.0,
-            "cleanup_output_ratio": 1.0,
-            "insufficient_reference_passthrough": 1.0,
-        }
+        return (
+            _passthrough_channels(mixture, output_channels),
+            _passthrough_diagnostics("insufficient_reference_passthrough"),
+        )
 
     alignment_diagnostics: dict[str, float] = {}
-    reference, alignment_score, aligned_start = _align_reference(
+    alignment = _align_reference(
         mixture,
         reference_search,
         sr,
         alignment_diagnostics,
         adaptive_time_warp,
+        predicted_start=predicted_start,
+        search_radius_sec=search_radius_sec,
     )
+    if alignment.reference is None:
+        # The decoded reference window does not span the aligned chunk. The
+        # caller decides whether to re-decode wider or to pass the chunk
+        # through; either way one chunk must not end the whole run.
+        return (
+            _passthrough_channels(mixture, output_channels),
+            _passthrough_diagnostics(
+                "coverage_passthrough",
+                **alignment_diagnostics,
+            ),
+        )
+
+    reference = alignment.reference
+    alignment_score = alignment.score
+    aligned_start = alignment.start
     reference_mid = 0.5 * (reference[:, 0] + reference[:, 1])
     reference_side = 0.5 * (reference[:, 0] - reference[:, 1])
 
@@ -551,6 +599,11 @@ def _cancel_chunk(
             )
         ),
         "cleanup_output_ratio": float(cleanup_ratio),
+        "control_reduction_db": _control_reduction_db(
+            control_mixture,
+            control_reference,
+            gain,
+        ),
         **alignment_diagnostics,
     }
     return output, diagnostics

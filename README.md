@@ -26,6 +26,9 @@ residual cleanup.
 
 - Automatically locates the reference track within the mixture;
 - Reacquires after pauses, resumes, seeks, and replays;
+- Tracks each segment's offset as a measured trajectory rather than one slope,
+  and re-measures every chunk in a cheap low-rate pass before cancelling;
+- Retries a chunk with a wider reference window instead of failing the run;
 - Uses 250 ms local time warping, with a validated 16 ms fine path when useful;
 - Decodes and processes in chunks instead of loading full-rate media at once;
 - Supports mono, stereo, and multichannel inputs downmixed by FFmpeg;
@@ -173,10 +176,12 @@ not persist a media library.
 | `--start SECONDS` | `0` | Start of the range where the reference may occur |
 | `--end SECONDS` | End of mixture | End of the range where the reference may occur |
 | `--chunk SECONDS` | `30` | Processing chunk length |
+| `--search SECONDS` | `0.25` | Reference search radius per chunk before a widened retry |
 | `--workers N` | `4` | Number of parallel scanning/processing jobs |
 | `--sample-rate HZ` | `48000` | Decode, processing, and output sample rate |
 | `--strength VALUE` | `1` | Unified preservation/removal control |
 | `--disable-adaptive-warp` | Off | Disable validated 16 ms fine time warping |
+| `--disable-momentum` | Off | Skip the low-rate pass that measures each chunk's offset |
 
 `--strength` has no hard upper limit:
 
@@ -244,16 +249,27 @@ disk.
    search to preserve established behavior; longer inputs build a compact
    streaming fingerprint index;
 2. **Segment tracking and reacquisition**: rate-limited global searches run
-   after local tracking fails, handling pauses, seeks, and replays;
-3. **Local time alignment**: anchors define a time warp, with denser candidate
-   paths validated when needed;
-4. **Mid/Side reference cancellation**: the Side channel, which is less
+   after local tracking fails, handling pauses, seeks, and replays. Each
+   segment keeps the anchor trajectory it was measured from, so a long segment
+   is not reduced to a single offset and slope;
+3. **Offset momentum**: before any cancellation, every matched chunk is probed
+   at 4 kHz over a wide window. The measurements are median-filtered into a
+   continuous track, so an ambiguous chunk inherits its neighbours' offset
+   instead of guessing;
+4. **Local time alignment**: the chunk-local search starts from that prediction
+   rather than scanning the whole window, then anchors define a time warp, with
+   denser candidate paths validated when needed;
+5. **Mid/Side reference cancellation**: the Side channel, which is less
    affected by centered speech, estimates a complex transfer function while
    the reference Mid helps process centered media;
-5. **Protected residual cleanup**: presenter speech and unrelated stereo
+6. **Protected residual cleanup**: presenter speech and unrelated stereo
    content are detected to automatically reduce later suppression;
-6. **Chunked output**: chunks are written in timeline order with smoothed
-   boundaries.
+7. **Per-chunk verification**: the correlation score, the momentum probe, and
+   the energy the subtraction actually removed vote on whether to keep the
+   cancelled chunk. A chunk that fails is retried once with a wider reference
+   window and only then passes through;
+8. **Chunked output**: chunks are written in timeline order with smoothed
+   boundaries, and every low-confidence span is listed when the run finishes.
 
 For deeper discussion of capabilities, boundaries, and experimental findings:
 

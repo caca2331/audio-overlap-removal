@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import numpy as np
 import scipy.fft
 import scipy.ndimage
@@ -337,7 +339,9 @@ def _segments_from_anchors(
             part = group[first:last]
             if len(part) < 2:
                 continue
-            part_offsets = np.array([item[1] for item in part])
+            # Keep the median-filtered offsets rather than the raw ones: a
+            # single mismatched anchor must not steer a chunk-local search.
+            part_offsets = np.asarray(smooth[first:last], dtype=np.float64)
             part_scores = np.array([item[2] for item in part])
             part_times = np.array([item[0] for item in part])
             start = part[0][0]
@@ -361,6 +365,10 @@ def _segments_from_anchors(
                     offset_sec=modeled_offset,
                     median_score=float(np.median(part_scores)),
                     offset_slope=slope,
+                    anchor_times=tuple(float(time) for time in part_times),
+                    anchor_offsets=tuple(
+                        float(offset) for offset in part_offsets
+                    ),
                 )
             )
 
@@ -369,12 +377,23 @@ def _segments_from_anchors(
 
 def _print_alignment_segments(segments: list[AlignmentSegment]) -> None:
     for segment in segments:
+        # The trajectory deviation is how far the kept anchors sit from the
+        # straight-line model, i.e. how much a single slope would mispredict.
+        deviation = 0.0
+        if segment.anchor_times:
+            times = np.asarray(segment.anchor_times)
+            modeled = segment.offset_sec + segment.offset_slope * (
+                times - 0.5 * (segment.mixture_start + segment.mixture_end)
+            )
+            offsets = np.asarray(segment.anchor_offsets)
+            deviation = float(np.max(np.abs(offsets - modeled)))
         print(
             f"  match C={segment.mixture_start:.1f}-"
             f"{segment.mixture_end:.1f}s "
             f"offset={segment.offset_sec:.3f}s "
             f"speed={(1.0 - segment.offset_slope):.6f}x "
-            f"median-score={segment.median_score:.3f}"
+            f"median-score={segment.median_score:.3f} "
+            f"traj-dev={1_000.0 * deviation:.0f}ms"
         )
 
 
@@ -690,6 +709,69 @@ def _best_scaled_match(
     return best_index, best_score
 
 
+class _CoarseCandidate(NamedTuple):
+    """One Mid/Side coarse alignment hypothesis for a chunk."""
+
+    adjusted_score: float
+    score: float
+    index: int
+    query_feature: np.ndarray
+    search_feature: np.ndarray
+    query_low: np.ndarray
+    search_low: np.ndarray
+
+
+class _ReferenceAlignment(NamedTuple):
+    """Chunk-local alignment result, including its coverage verdict."""
+
+    reference: np.ndarray | None
+    score: float
+    start: int
+    covered: bool
+
+
+_PROBE_RADIUS_LADDER = (1.0, 4.0, 16.0)
+_PROBE_ACCEPT_SCORE = 0.30
+_PROBE_WIDEN_MARGIN = 0.05
+
+
+def _prior_constrained_match(
+    search: np.ndarray,
+    query: np.ndarray,
+    predicted_start: float | None,
+    radius: float,
+) -> tuple[int, float]:
+    """Match near a predicted position, widening only when the prior fails.
+
+    The caller already knows where the query should land to within ``radius``.
+    An unconstrained ``argmax`` over the complete search window turns any
+    repeated passage into a confident wrong answer, so trust the prior first
+    and only pay for a wider window when the constrained score is weak.
+    """
+    if predicted_start is None:
+        return _best_scaled_match(search, query)
+    best: tuple[int, float] | None = None
+    for scale in _PROBE_RADIUS_LADDER:
+        window_radius = radius * scale
+        start = int(max(0.0, np.floor(predicted_start - window_radius)))
+        end = int(
+            min(
+                float(len(search)),
+                np.ceil(predicted_start + len(query) + window_radius),
+            )
+        )
+        if end - start < len(query):
+            continue
+        index, score = _best_scaled_match(search[start:end], query)
+        if best is None or score > best[1] + _PROBE_WIDEN_MARGIN:
+            best = (start + index, score)
+        if best[1] >= _PROBE_ACCEPT_SCORE or (start == 0 and end == len(search)):
+            break
+    if best is None:
+        return _best_scaled_match(search, query)
+    return best
+
+
 def _fractional_match_index(
     search: np.ndarray,
     query: np.ndarray,
@@ -725,8 +807,18 @@ def _align_reference(
     sr: int,
     diagnostics: dict[str, float] | None = None,
     adaptive_time_warp: bool = True,
-) -> tuple[np.ndarray, float, int]:
-    """Align and locally time-warp a reference to one mixture chunk."""
+    predicted_start: float | None = None,
+    search_radius_sec: float = 0.25,
+) -> _ReferenceAlignment:
+    """Align and locally time-warp a reference to one mixture chunk.
+
+    ``predicted_start`` is where ``mixture[0]`` is expected inside
+    ``reference_search``, in samples. Pass ``None`` only when no prior exists;
+    the coarse search is then unconstrained and can lock onto a repeated
+    passage elsewhere in the window.
+    """
+    if not np.isfinite(search_radius_sec) or search_radius_sec <= 0.0:
+        raise ValueError("search_radius_sec must be positive and finite.")
     down = max(1, sr // 4_000)
     low_sr = sr / down
     high = min(1_800.0, 0.45 * low_sr)
@@ -747,16 +839,17 @@ def _align_reference(
             0.5 * (reference_search[:, 0] - reference_search[:, 1]),
         ),
     ]
-    candidates: list[
-        tuple[
-            float,
-            int,
-            np.ndarray,
-            np.ndarray,
-            np.ndarray,
-            np.ndarray,
-        ]
-    ] = []
+    prior_low = None if predicted_start is None else predicted_start / down
+    radius_low = max(search_radius_sec * low_sr, 4.0)
+
+    def prior_penalty(coarse_index: int) -> float:
+        """Discount a candidate that disagrees with the caller's prediction."""
+        if prior_low is None:
+            return 0.0
+        deviation = abs(coarse_index - prior_low) / radius_low
+        return 0.10 * float(np.clip(deviation - 1.0, 0.0, 4.0))
+
+    candidates: list[_CoarseCandidate] = []
     for query_feature, search_feature in feature_pairs:
         query_low = scipy.signal.resample_poly(query_feature, 1, down)
         search_low = scipy.signal.resample_poly(search_feature, 1, down)
@@ -767,30 +860,34 @@ def _align_reference(
         # anchors across the chunk.
         probe_frames = min(len(query_low), max(int(round(4.0 * low_sr)), 256))
         probe_start = max(0, (len(query_low) - probe_frames) // 2)
-        coarse_hit, coarse_score = _best_scaled_match(
+        coarse_hit, coarse_score = _prior_constrained_match(
             search_low,
             query_low[probe_start : probe_start + probe_frames],
+            None if prior_low is None else prior_low + probe_start,
+            radius_low,
         )
         coarse_index = coarse_hit - probe_start
         candidates.append(
-            (
-                coarse_score,
-                coarse_index,
-                query_feature,
-                search_feature,
-                query_low,
-                search_low,
+            _CoarseCandidate(
+                adjusted_score=coarse_score - prior_penalty(coarse_index),
+                score=coarse_score,
+                index=coarse_index,
+                query_feature=query_feature,
+                search_feature=search_feature,
+                query_low=query_low,
+                search_low=search_low,
             )
         )
 
-    (
-        coarse_score,
-        coarse_index,
-        query_feature,
-        search_feature,
-        query_low,
-        search_low,
-    ) = max(candidates, key=lambda item: item[0])
+    best_candidate = max(candidates, key=lambda item: item.adjusted_score)
+    coarse_score = best_candidate.score
+    coarse_index = best_candidate.index
+    query_feature = best_candidate.query_feature
+    search_feature = best_candidate.search_feature
+    query_low = best_candidate.query_low
+    search_low = best_candidate.search_low
+    if diagnostics is not None and prior_low is not None:
+        diagnostics["coarse_prior_error_sec"] = (coarse_index - prior_low) / low_sr
 
     def collect_native_anchors(
         anchor_sec: float,
@@ -982,8 +1079,17 @@ def _align_reference(
             alignment_score = short_score
 
     aligned_start = int(round(source_positions[0]))
-    if source_positions[0] < -1.0 or source_positions[-1] > len(reference_search):
-        raise ValueError("Aligned reference does not cover the complete chunk.")
+    # Running off either end of the decoded window is a recoverable condition,
+    # not a fatal one: the caller can re-decode a wider window using the
+    # reported deficit, or fall back to pass-through for this chunk alone.
+    deficit_start = max(0.0, -1.0 - float(source_positions[0]))
+    deficit_end = max(0.0, float(source_positions[-1]) - len(reference_search))
+    if diagnostics is not None:
+        diagnostics["coverage_deficit_start_sec"] = deficit_start / sr
+        diagnostics["coverage_deficit_end_sec"] = deficit_end / sr
+    if deficit_start > 0.0 or deficit_end > 0.0:
+        return _ReferenceAlignment(None, alignment_score, aligned_start, False)
+
     source_positions = np.clip(source_positions, 0.0, len(reference_search) - 1.0)
     sample_axis = np.arange(len(reference_search), dtype=np.float64)
     aligned = np.column_stack(
@@ -992,4 +1098,4 @@ def _align_reference(
             for ch in range(reference_search.shape[1])
         ]
     ).astype(np.float32)
-    return aligned, alignment_score, aligned_start
+    return _ReferenceAlignment(aligned, alignment_score, aligned_start, True)

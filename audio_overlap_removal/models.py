@@ -14,9 +14,26 @@ class AlignmentSegment:
     offset_sec: float
     median_score: float
     offset_slope: float = 0.0
+    anchor_times: tuple[float, ...] = ()
+    anchor_offsets: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        if len(self.anchor_times) != len(self.anchor_offsets):
+            raise ValueError("anchor_times and anchor_offsets must be equal length.")
 
     def offset_at(self, mixture_time: float) -> float:
-        """Return C-time minus B-time, including steady playback-rate drift."""
+        """Return C-time minus B-time at one mixture timestamp.
+
+        A discovered segment keeps the anchor trajectory measured during the
+        scan. Real playback drift is rarely a straight line over tens of
+        minutes, and a single slope leaves the middle of a long segment tens
+        or hundreds of milliseconds off, which is enough to push chunk-local
+        alignment outside its reference search buffer.
+        """
+        if self.anchor_times:
+            return float(
+                np.interp(mixture_time, self.anchor_times, self.anchor_offsets)
+            )
         center = 0.5 * (self.mixture_start + self.mixture_end)
         return self.offset_sec + self.offset_slope * (mixture_time - center)
 
@@ -50,6 +67,53 @@ def cancellation_profile(strength: float) -> CancellationProfile:
     )
 
 
+def _segment_to_dict(segment: AlignmentSegment) -> dict:
+    """Serialise a segment, including the anchor trajectory behind offset_at."""
+    return {
+        "mixture_start": segment.mixture_start,
+        "mixture_end": segment.mixture_end,
+        "offset_sec": segment.offset_sec,
+        "median_score": segment.median_score,
+        "offset_slope": segment.offset_slope,
+        "anchor_times": list(segment.anchor_times),
+        "anchor_offsets": list(segment.anchor_offsets),
+    }
+
+
+def _segment_from_dict(payload: dict) -> AlignmentSegment:
+    """Rebuild a segment, tolerating hand-written files without a trajectory."""
+    try:
+        return AlignmentSegment(
+            mixture_start=float(payload["mixture_start"]),
+            mixture_end=float(payload["mixture_end"]),
+            offset_sec=float(payload["offset_sec"]),
+            median_score=float(payload.get("median_score", 1.0)),
+            offset_slope=float(payload.get("offset_slope", 0.0)),
+            anchor_times=tuple(
+                float(time) for time in payload.get("anchor_times", ())
+            ),
+            anchor_offsets=tuple(
+                float(offset) for offset in payload.get("anchor_offsets", ())
+            ),
+        )
+    except (KeyError, TypeError) as error:
+        raise ValueError(f"Invalid alignment segment: {payload!r}") from error
+
+
+def _clipped_trajectory(
+    segment: AlignmentSegment,
+    start_sec: float,
+    end_sec: float,
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Restrict an anchor trajectory to a range without moving any offset."""
+    if not segment.anchor_times:
+        return (), ()
+    times = np.asarray(segment.anchor_times, dtype=np.float64)
+    interior = times[(times > start_sec) & (times < end_sec)]
+    kept_times = (start_sec, *(float(time) for time in interior), end_sec)
+    return kept_times, tuple(segment.offset_at(time) for time in kept_times)
+
+
 def _clip_alignment_segments(
     segments: list[AlignmentSegment],
     start_sec: float,
@@ -65,6 +129,11 @@ def _clip_alignment_segments(
         if clipped_end <= clipped_start:
             continue
         center = 0.5 * (clipped_start + clipped_end)
+        anchor_times, anchor_offsets = _clipped_trajectory(
+            segment,
+            clipped_start,
+            clipped_end,
+        )
         clipped.append(
             AlignmentSegment(
                 mixture_start=clipped_start,
@@ -72,6 +141,8 @@ def _clip_alignment_segments(
                 offset_sec=segment.offset_at(center),
                 median_score=segment.median_score,
                 offset_slope=segment.offset_slope,
+                anchor_times=anchor_times,
+                anchor_offsets=anchor_offsets,
             )
         )
     return clipped
