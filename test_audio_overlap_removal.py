@@ -436,9 +436,13 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         self.assertEqual(candidate.media_id, "second")
         self.assertAlmostEqual(candidate.time_sec, second_track.times[20])
         self.assertGreater(candidate.score, 0.999)
+        # The scan is allowed to grow into the memory the cancellation phase
+        # already needs, but not past it: the two run in sequence, so anything
+        # under that ceiling costs nothing, and anything over it raises the
+        # peak for every job. Two tracks are indexed, hence the halving.
         bytes_per_window = index.memory_bytes / index.entry_count
         estimated_24_hour_index = bytes_per_window * (24 * 60 * 60 / 0.25)
-        self.assertLess(estimated_24_hour_index, 512 * 1024 * 1024)
+        self.assertLess(estimated_24_hour_index, 1.7 * 1000**3)
 
     def test_alignment_strategy_preserves_short_file_fft_path(self) -> None:
         with (

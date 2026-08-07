@@ -70,8 +70,8 @@ Requirements:
 - Python 3.10 or later;
 - `ffmpeg` and `ffprobe` available on `PATH`;
 - Mixture and reference files no longer than 24 hours each;
-- Memory: under 3 GB for ordinary jobs, under 8 GB for a 24-hour file, at the
-  default `--workers 4`. See [Performance guidance](#performance-guidance).
+- Memory: 4 GB at the default `--workers 4`, whatever the input length. See
+  [Performance guidance](#performance-guidance).
 
 Create a virtual environment:
 
@@ -342,12 +342,13 @@ max(0.2 + 0.8 * workers, scan)
 ```
 
 where `scan` is `0.6 * hours` for inputs up to four hours and `0.1 +
-0.025 * hours` beyond that — longer inputs switch to a streaming index and
-need *less* memory, not more. `--chunk` and `--sample-rate` scale the
-per-worker term proportionally.
+0.1 * hours` beyond that — longer inputs switch to a streaming index, so a
+24-hour file needs no more than a four-hour one. `--chunk` and
+`--sample-rate` scale the per-worker term proportionally.
 
-At the default `--workers 4` that is about 3.4 GB for any duration. Lower
-`--workers` first if memory is tight; past four it buys little speed.
+At the default `--workers 4` that is **about 3.4 GB for any duration, so
+4 GB is enough**. Lower `--workers` first if memory is tight; past four it
+buys little speed.
 
 ## Tests
 

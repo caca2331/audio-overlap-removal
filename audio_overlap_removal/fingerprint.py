@@ -11,8 +11,16 @@ from .media import MIN_ALIGNMENT_SAMPLE_RATE, _iter_decode_mono_low
 
 DEFAULT_FINGERPRINT_HOP_SEC = 0.25
 DEFAULT_FINGERPRINT_FRAME_SEC = 0.50
-DEFAULT_FINGERPRINT_BANDS = 8
-DEFAULT_FINGERPRINT_TEMPORAL_BINS = 8
+# 16x16 rather than 8x8: the extra dimensions do not make a true match score
+# higher, but they push chance collisions down as 1/sqrt(dimensions), from
+# 0.45 to 0.22 -- the 8x8 floor sat above the 0.40 local threshold, leaving
+# that gate with no margin over coincidence. 256 dimensions is what fits the
+# scan into the memory the cancellation phase already needs.
+DEFAULT_FINGERPRINT_BANDS = 16
+DEFAULT_FINGERPRINT_TEMPORAL_BINS = 16
+# Raising this does not help: measured, extending the band to 900 or 1800 Hz
+# lowers the true-match score. The robust contour lives in the low band.
+DEFAULT_FINGERPRINT_HIGH_HZ = 450.0
 
 
 @dataclass(frozen=True)
@@ -202,6 +210,7 @@ def fingerprint_media(
     frame_sec: float = DEFAULT_FINGERPRINT_FRAME_SEC,
     bands: int = DEFAULT_FINGERPRINT_BANDS,
     temporal_bins: int = DEFAULT_FINGERPRINT_TEMPORAL_BINS,
+    high_hz: float = DEFAULT_FINGERPRINT_HIGH_HZ,
 ) -> FingerprintTrack:
     """Stream a media file and return compact, volume-invariant signatures."""
     blocks = _iter_decode_mono_low(
@@ -220,6 +229,7 @@ def fingerprint_media(
         frame_sec=frame_sec,
         bands=bands,
         temporal_bins=temporal_bins,
+        high_hz=high_hz,
     )
 
 
@@ -234,6 +244,7 @@ def fingerprint_blocks(
     frame_sec: float = DEFAULT_FINGERPRINT_FRAME_SEC,
     bands: int = DEFAULT_FINGERPRINT_BANDS,
     temporal_bins: int = DEFAULT_FINGERPRINT_TEMPORAL_BINS,
+    high_hz: float = DEFAULT_FINGERPRINT_HIGH_HZ,
 ) -> FingerprintTrack:
     """Build fingerprints from an iterable without retaining decoded audio."""
     if sr < MIN_ALIGNMENT_SAMPLE_RATE:
@@ -265,7 +276,7 @@ def fingerprint_blocks(
     signature_frames = 1 + int(round((query_sec - frame_sec) / hop_sec))
     effective_temporal_bins = min(temporal_bins, signature_frames)
     feature_dimensions = effective_temporal_bins * bands
-    high_hz = min(450.0, 0.45 * sr)
+    high_hz = min(high_hz, 0.45 * sr)
     if high_hz <= 60.0:
         raise ValueError("fingerprint sample rate leaves no usable frequency band.")
     band_edges = np.geomspace(60.0, high_hz, bands + 1)
