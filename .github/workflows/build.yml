@@ -61,18 +61,28 @@ jobs:
           "$PY" -m pip install --quiet -e ".[build]"
           "$PY" packaging/build.py
 
-      - name: Ad-hoc sign
-        if: runner.os == 'macOS'
-        run: codesign -s - --force --deep "dist/${{ matrix.tag }}/audio-overlap-removal"
-
-      - name: Verify
+      # Verify the unpacked archive, not the build tree. build.py archives as
+      # its last step, so anything done to dist/ afterwards is tested but never
+      # shipped -- and archiving itself can damage what it packs. macOS is the
+      # sharp case: arm64 refuses to run code whose signature does not check
+      # out, and a mangled Python.framework reports itself as damaged.
+      - name: Verify what will ship
         shell: bash
         run: |
+          rm -rf shipped && mkdir shipped
           if [ "$RUNNER_OS" = "Windows" ]; then
-            .venv-build/Scripts/python.exe packaging/verify.py
+            PY=.venv-build/Scripts/python.exe
+            "$PY" -c "import zipfile,glob; zipfile.ZipFile(glob.glob('dist/*.zip')[0]).extractall('shipped')"
           else
-            .venv-build/bin/python packaging/verify.py
+            PY=.venv-build/bin/python
+            tar -xzf dist/*.tar.gz -C shipped
           fi
+          BUNDLE=$(echo shipped/*)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            codesign --verify --deep --strict --verbose=2 "$BUNDLE/audio-overlap-removal"
+            chmod +x "$BUNDLE/audio-overlap-removal"
+          fi
+          "$PY" packaging/verify.py --bundle "$BUNDLE"
 
       - uses: actions/upload-artifact@v4
         with:
