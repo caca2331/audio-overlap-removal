@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   native:
     # Windows and macOS build where they run; PyInstaller cannot cross-compile,
@@ -91,7 +95,10 @@ jobs:
             bash packaging/build-manylinux.sh
 
       - name: Take ownership of container output
-        run: sudo chown -R "$(id -u):$(id -g)" build dist
+        # Not just build/ and dist/: the editable install inside the container
+        # also drops a root-owned egg-info next to the package, and the verify
+        # step's own install then cannot touch it.
+        run: sudo chown -R "$(id -u):$(id -g)" .
 
       - uses: actions/setup-python@v5
         with:
