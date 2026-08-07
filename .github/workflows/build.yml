@@ -75,7 +75,9 @@ jobs:
             "$PY" -c "import zipfile,glob; zipfile.ZipFile(glob.glob('dist/*.zip')[0]).extractall('shipped')"
           else
             PY=.venv-build/bin/python
-            tar -xzf dist/*.tar.gz -C shipped
+            # Unpack the way the archive was made, so symlinks and permissions
+            # are exercised end to end.
+            ditto -x -k dist/*.zip shipped
           fi
           BUNDLE=$(echo shipped/*)
           if [ "$RUNNER_OS" = "macOS" ]; then

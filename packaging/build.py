@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -73,16 +74,38 @@ def _smoke_test(bundle: Path) -> None:
 
 
 def _archive(bundle: Path, stem: str) -> Path:
-    # zip on Windows, tar.gz elsewhere: zip entries drop the executable bit.
     if sys.platform == "win32":
+        # Plain zip: Windows has no executable bit to lose.
         archive = DIST / f"{stem}.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as handle:
             for path in sorted(bundle.rglob("*")):
                 handle.write(path, Path(stem) / path.relative_to(bundle))
-    else:
-        archive = DIST / f"{stem}.tar.gz"
-        with tarfile.open(archive, "w:gz") as handle:
-            handle.add(bundle, arcname=stem)
+        return archive
+
+    if sys.platform == "darwin":
+        # ditto is what Apple documents for shipping signed software, and its
+        # zip keeps the symlinks, permissions and signatures that the embedded
+        # Python.framework needs. A tar.gz would carry those too, but third
+        # party unarchivers choke on it -- The Unarchiver fails on the plain
+        # directory entries under numpy's dist-info -- while Archive Utility,
+        # the handler most users actually have, unpacks a zip correctly.
+        archive = DIST / f"{stem}.zip"
+        archive.unlink(missing_ok=True)
+        with tempfile.TemporaryDirectory() as staging:
+            # --keepParent names the top-level directory after its source, so
+            # the copy has to carry the name users should end up with.
+            named = Path(staging) / stem
+            subprocess.run(["ditto", str(bundle), str(named)], check=True)
+            subprocess.run(
+                ["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
+                 str(named), str(archive)],
+                check=True,
+            )
+        return archive
+
+    archive = DIST / f"{stem}.tar.gz"
+    with tarfile.open(archive, "w:gz") as handle:
+        handle.add(bundle, arcname=stem)
     return archive
 
 
