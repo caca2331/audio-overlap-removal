@@ -538,8 +538,12 @@ def _discover_indexed_alignment_segments(
         f"({index.memory_bytes / (1024 * 1024):.1f} MiB compact arrays)"
     )
 
-    global_threshold = max(0.55, 0.45 + 0.25 * min_score)
-    local_threshold = max(0.40, 0.30 + 0.25 * min_score)
+    # Both sit above the chance floor of the fingerprint, measured at 0.29 on
+    # real material. The global search compares against every reference window
+    # and so sees a much heavier tail than the local one, which is constrained
+    # by a prior; it keeps the wider margin.
+    global_threshold = max(0.42, 0.34 + 0.25 * min_score)
+    local_threshold = max(0.31, 0.24 + 0.25 * min_score)
     first_mixture_time = float(mixture_track.times[0])
     last_mixture_time = float(mixture_track.times[-1])
     available_span = last_mixture_time - first_mixture_time

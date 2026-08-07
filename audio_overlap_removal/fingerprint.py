@@ -9,14 +9,20 @@ import scipy.spatial
 
 from .media import MIN_ALIGNMENT_SAMPLE_RATE, _iter_decode_mono_low
 
-DEFAULT_FINGERPRINT_HOP_SEC = 0.25
+# A 0.5 s hop halves the number of signatures, which pays for twice the bands
+# at the same index size, and on real material that trades well: measured
+# against a real broadcast reference under a real host voice, 32x16 at this
+# hop misses 58% of windows at its own chance floor where 16x16 at a 0.25 s
+# hop misses 63%, for the same 2.8 GB over 24 hours. Anchors are five seconds
+# apart regardless, and sub-hop offset error is refined away.
+DEFAULT_FINGERPRINT_HOP_SEC = 0.50
 DEFAULT_FINGERPRINT_FRAME_SEC = 0.50
-# 16x16 rather than 8x8: the extra dimensions do not make a true match score
-# higher, but they push chance collisions down as 1/sqrt(dimensions), from
-# 0.45 to 0.22 -- the 8x8 floor sat above the 0.40 local threshold, leaving
-# that gate with no margin over coincidence. 256 dimensions is what fits the
-# scan into the memory the cancellation phase already needs.
-DEFAULT_FINGERPRINT_BANDS = 16
+# Wider than the original 8x8. Extra dimensions do not raise the score of a
+# true match -- on real material they lower it slightly -- but they push
+# chance collisions down faster, so the threshold can come down with them and
+# recall improves net. The old 8x8 floor of 0.45 sat above the 0.40 local
+# threshold, leaving that gate no margin over coincidence at all.
+DEFAULT_FINGERPRINT_BANDS = 32
 DEFAULT_FINGERPRINT_TEMPORAL_BINS = 16
 # Raising this does not help: measured, extending the band to 900 or 1800 Hz
 # lowers the true-match score. The robust contour lives in the low band.
