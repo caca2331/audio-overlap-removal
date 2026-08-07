@@ -434,6 +434,51 @@ def _sequence_global_match(
     )
 
 
+def _refine_indexed_offset(
+    mixture_path: str,
+    reference_path: str,
+    mixture_time: float,
+    grid_offset: float,
+    *,
+    align_sr: int,
+    probe_sec: float,
+    radius_sec: float,
+    min_score: float,
+) -> float | None:
+    """Pin a fingerprint offset to the waveform, or None if it cannot be.
+
+    Index times land on the fingerprint hop grid, so an offset read straight
+    off them is up to half a hop out. That error is not harmless: it survives
+    into cancellation, and it makes the tracker alternate between neighbouring
+    grid points, which splits one match into hundreds of segments.
+    """
+    reference_time = mixture_time - grid_offset
+    search_start = max(0.0, reference_time - radius_sec)
+    query = _decode_mono_low(
+        mixture_path, align_sr, start_sec=mixture_time, duration_sec=probe_sec
+    )
+    search = _decode_mono_low(
+        reference_path,
+        align_sr,
+        start_sec=search_start,
+        duration_sec=probe_sec + 2.0 * radius_sec,
+    )
+    if len(query) < align_sr or len(search) <= len(query):
+        return None
+    index, score = _normalized_match(search, query)
+    if score < min_score:
+        return None
+    fractional = _fractional_match_index(search, query, index)
+    refined = mixture_time - (search_start + fractional / align_sr)
+    # The search window is clamped at the start of the media, so the peak can
+    # land outside the intended radius. A refinement is only ever a correction
+    # to the grid offset; anything further out is not one, and because the
+    # tracker carries the refined value forward, one bad result would persist.
+    if abs(refined - grid_offset) > radius_sec:
+        return None
+    return refined
+
+
 def _discover_indexed_alignment_segments(
     mixture_path: str,
     reference_path: str,
@@ -516,6 +561,41 @@ def _discover_indexed_alignment_segments(
         return []
 
     seed_offset = seed[0] - seed[1]
+
+    hop_sec = reference_track.hop_sec
+
+    # Refinement needs to decode; when that is impossible it stays off for the
+    # whole scan, so a rejected refinement always means "the waveform
+    # disagrees" rather than "the waveform could not be read".
+    refinable = True
+
+    def refine(mixture_time: float, grid_offset: float) -> float | None:
+        nonlocal refinable
+        if not refinable:
+            return None
+        try:
+            return _refine_indexed_offset(
+                mixture_path,
+                reference_path,
+                mixture_time,
+                grid_offset,
+                align_sr=align_sr,
+                probe_sec=query_sec,
+                radius_sec=1.5 * hop_sec,
+                min_score=min_score,
+            )
+        except (RuntimeError, ValueError):
+            refinable = False
+            return None
+
+    # Probe one window inside the match rather than at the seed itself: at the
+    # boundary the mixture has not started carrying the reference yet, and the
+    # search window is clamped by the start of the media, so the peak there is
+    # not a measurement of the offset.
+    seed_probe = min(seed[0] + query_sec, last_mixture_time)
+    refined_seed = refine(seed_probe, seed_offset)
+    if refined_seed is not None:
+        seed_offset = refined_seed
     print(
         f"  seed C={seed[0]:.1f}s B={seed[1]:.3f}s "
         f"offset={seed_offset:.3f}s score={seed[2]:.3f}"
@@ -551,7 +631,13 @@ def _discover_indexed_alignment_segments(
             local_radius,
         )
         if local is not None and local.score >= local_threshold:
-            tracked_offset = mixture_time - local.time_sec
+            grid_offset = mixture_time - local.time_sec
+            # Within one hop the index cannot tell whether the alignment moved,
+            # so keep the refined offset rather than letting the anchor snap to
+            # whichever grid point happened to win.
+            if abs(grid_offset - tracked_offset) > 1.1 * hop_sec:
+                refined = refine(mixture_time, grid_offset)
+                tracked_offset = grid_offset if refined is None else refined
             anchors.append((mixture_time, tracked_offset, local.score))
             last_match_time = mixture_time
             continue
@@ -571,7 +657,15 @@ def _discover_indexed_alignment_segments(
             query_sec,
         )
         if candidate is not None and candidate.score >= global_threshold:
-            tracked_offset = mixture_time - candidate.time_sec
+            grid_offset = mixture_time - candidate.time_sec
+            refined = refine(mixture_time, grid_offset)
+            if refined is None and refinable:
+                # A reacquire claims the alignment jumped, with no prior to
+                # constrain it. When the waveform can be read and disagrees,
+                # the claim is wrong; accepting it would drag the rest of the
+                # track onto a false offset.
+                continue
+            tracked_offset = grid_offset if refined is None else refined
             anchors.append((mixture_time, tracked_offset, candidate.score))
             last_match_time = mixture_time
 

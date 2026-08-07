@@ -335,14 +335,19 @@ For deeper discussion of capabilities, boundaries, and experimental findings:
 
 ### Memory
 
-With the default `--workers 4`:
+Peak memory in GB is roughly
 
-- ordinary jobs stay under 3 GB;
-- a 24-hour file stays under 8 GB.
+```
+max(0.2 + 0.8 * workers, scan)
+```
 
-Each extra worker adds to the peak, so lower `--workers` if memory is tight.
-Long files are handled without loading the whole audio at once, so a 24-hour
-job needs only a little more memory than a short one.
+where `scan` is `0.6 * hours` for inputs up to four hours and `0.1 +
+0.025 * hours` beyond that — longer inputs switch to a streaming index and
+need *less* memory, not more. `--chunk` and `--sample-rate` scale the
+per-worker term proportionally.
+
+At the default `--workers 4` that is about 3.4 GB for any duration. Lower
+`--workers` first if memory is tight; past four it buys little speed.
 
 ## Tests
 
