@@ -16,9 +16,11 @@ jobs:
   # standalone build there costs a container with an old glibc plus a
   # verification pass on a second distribution.
   #
-  # Each entry builds where it runs. PyInstaller cannot cross-compile, and
-  # macOS has no universal2 wheels for numpy/scipy, so each architecture
-  # needs its own runner.
+  # macOS is Apple Silicon only. numpy and scipy publish no universal2
+  # wheels, so an Intel build needs its own runner, and those are scarce
+  # enough to hold the whole run up for the better part of an hour.
+  #
+  # Each entry builds where it runs; PyInstaller cannot cross-compile.
   native:
     name: ${{ matrix.tag }}
     runs-on: ${{ matrix.os }}
@@ -30,8 +32,6 @@ jobs:
             tag: windows-x86_64
           - os: macos-14
             tag: macos-arm64
-          - os: macos-13
-            tag: macos-x86_64
     steps:
       - uses: actions/checkout@v4
 

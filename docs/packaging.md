@@ -5,7 +5,8 @@ FFmpeg **不打进包里**——它是系统级依赖，用户仍需自行安装
 前置条件保持一致。
 
 不做 Linux 分发：用 Linux 的人自己从 PyPI 装就是了，而为它出独立包要额外
-维护一个老 glibc 的构建容器，外加在第二个发行版上跑验证。
+维护一个老 glibc 的构建容器，外加在第二个发行版上跑验证。macOS 只发
+Apple Silicon，理由见下。
 
 ## 形态
 
@@ -50,9 +51,10 @@ Windows 上把 `.venv-build/bin/python` 换成 `.venv-build\Scripts\python.exe`�
 tar.gz，因为 zip 条目不保留可执行位）、以及 `.sha256`。构建脚本会跑一次
 `--help` 冒烟测试，走完整个 import 链——`excludes` 砍错东西会在这里暴露。
 
-macOS 只能得到构建机自身的架构：numpy/scipy 没有 universal2 wheel，
-`--target-arch universal2` 走不通，Intel 与 Apple Silicon 需要两台机器
-（CI 里就是 `macos-13` 和 `macos-14` 两个 runner）。
+macOS 只发 Apple Silicon。构建机只能产出自身架构，numpy/scipy 没有
+universal2 wheel，`--target-arch universal2` 走不通，Intel 版需要单独一台
+机器；而 GitHub 的 Intel runner 稀缺到能把整个 run 拖上近一小时。Intel Mac
+用户从 PyPI 装即可。
 
 ## 体积
 
@@ -88,7 +90,7 @@ BLAS，不必各自捆一份 OpenBLAS。Windows 侧构成：
   但排除它曾让 Linux 构建启动即崩：PyInstaller 在那边会加 `pkg_resources`
   运行时钩子，在 `main()` 之前 import 它，而 Windows 不引入这个钩子，所以
   当时是在 Linux 的冒烟测试里才暴露。Linux 已不是发布目标，这 5 MB 因此
-  可以重新评估，但**要在 Windows 和两个 macOS 架构上都实测通过**才能动。
+  可以重新评估，但**要在 Windows 和 macOS 上都实测通过**才能动。
 - **不要开 UPX**：能再砍掉约一半解包体积，但会破坏部分 numpy/scipy 的
   DLL，并显著抬高杀软误报率。
 
