@@ -47,9 +47,13 @@ Windows 上把 `.venv-build/bin/python` 换成 `.venv-build\Scripts\python.exe`�
 验收标准：冻结版与源码版在同一份输入上应当**逐字节一致**。这是最省事的
 回归证明——数值有任何偏差都说明打包动到了不该动的东西。
 
-产出在 `dist/`：可执行目录、按平台命名的压缩档（Windows 用 zip，其余用
-tar.gz，因为 zip 条目不保留可执行位）、以及 `.sha256`。构建脚本会跑一次
-`--help` 冒烟测试，走完整个 import 链——`excludes` 砍错东西会在这里暴露。
+产出在 `dist/`：可执行目录和按平台命名的压缩档（Windows 与 macOS 用 zip，
+Linux 用 tar.gz，因为 zip 条目不保留可执行位）。构建脚本会跑一次 `--help`
+冒烟测试，走完整个 import 链——`excludes` 砍错东西会在这里暴露。
+
+不随包发 `.sha256`：校验和文件与压缩档同源同权限，能替换后者的人也能替换
+前者，挡不住篡改；而它唯一能挡的下载损坏 HTTPS 已经覆盖。真要做完整性
+保证得上签名（`actions/attest-build-provenance`），并排放个哈希不算。
 
 macOS 只发 Apple Silicon。构建机只能产出自身架构，numpy/scipy 没有
 universal2 wheel，`--target-arch universal2` 走不通，Intel 版需要单独一台

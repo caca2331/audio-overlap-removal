@@ -33,9 +33,9 @@ jobs:
           - os: macos-14
             tag: macos-arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -86,13 +86,12 @@ jobs:
           fi
           "$PY" packaging/verify.py --bundle "$BUNDLE"
 
-      - uses: actions/upload-artifact@v4
+      # Both targets archive as zip; only the Linux path build.py still
+      # supports produces a tar.gz, and nothing here runs on Linux.
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.tag }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/*.sha256
+          path: dist/*.zip
 
   release:
     # Tagging is the publish action: Actions artifacts need a login to download
@@ -103,7 +102,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true

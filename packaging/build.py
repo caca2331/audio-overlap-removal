@@ -7,7 +7,6 @@ Run on the target platform; PyInstaller cannot cross-compile:
 
 from __future__ import annotations
 
-import hashlib
 import platform
 import re
 import subprocess
@@ -109,14 +108,6 @@ def _archive(bundle: Path, stem: str) -> Path:
     return archive
 
 
-def _checksum(archive: Path) -> str:
-    digest = hashlib.sha256()
-    with archive.open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _check_size(bundle: Path) -> int:
     """Guard against building from a polluted environment.
 
@@ -141,15 +132,10 @@ def main() -> None:
     _smoke_test(bundle)
     stem = f"{NAME}-{_version()}-{tag}"
     archive = _archive(bundle, stem)
-    checksum = _checksum(archive)
-    (DIST / f"{archive.name}.sha256").write_text(
-        f"{checksum}  {archive.name}\n", encoding="utf-8"
-    )
 
     print(f"\n{archive.name}")
     print(f"  archive   {archive.stat().st_size / 1e6:.1f} MB")
     print(f"  unpacked  {unpacked / 1e6:.1f} MB")
-    print(f"  sha256    {checksum}")
 
 
 if __name__ == "__main__":
