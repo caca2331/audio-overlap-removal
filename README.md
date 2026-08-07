@@ -46,8 +46,8 @@ Requirements:
 - Python 3.10 or later;
 - `ffmpeg` and `ffprobe` available on `PATH`;
 - Mixture and reference files no longer than 24 hours each;
-- At least 8 GiB of memory recommended. Higher `--workers` values increase
-  peak memory use.
+- Memory: under 3 GB for ordinary jobs, under 8 GB for a 24-hour file, at the
+  default `--workers 4`. See [Performance guidance](#performance-guidance).
 
 Create a virtual environment:
 
@@ -74,6 +74,30 @@ Verify that the external decoders are available:
 ```bash
 ffmpeg -version
 ffprobe -version
+```
+
+### Locating FFmpeg
+
+`PATH` is the normal answer, but it is not the only place that is searched.
+`ffmpeg` and `ffprobe` are looked up in this order:
+
+1. the directory named by the `AOR_FFMPEG_DIR` environment variable;
+2. the directory holding the executable, and its `bin/` subdirectory
+   (standalone builds only);
+3. `PATH`;
+4. common install locations, including `C:\Program Files\ffmpeg\bin`,
+   `C:\ffmpeg\bin`, Chocolatey, Scoop and WinGet on Windows;
+   `/opt/homebrew/bin`, `/usr/local/bin` and MacPorts on macOS;
+   `/usr/local/bin`, `/snap/bin`, linuxbrew and `~/.local/bin` on Linux.
+
+A configured `PATH` always wins over the guessed locations. Copying FFmpeg into
+one of these directories means copying all of it: shared builds keep the codecs
+in sibling `av*` libraries, and `ffmpeg` and `ffprobe` alone will not start.
+
+Set `AOR_FFMPEG_DIR` when FFmpeg lives somewhere else entirely:
+
+```bash
+AOR_FFMPEG_DIR=/opt/ffmpeg/bin audio-overlap-removal mixture.webm reference.webm clean.flac
 ```
 
 ## Quick start
@@ -280,22 +304,21 @@ For deeper discussion of capabilities, boundaries, and experimental findings:
 
 - Use `--start/--end` to reduce the scan range when the reference can only occur
   during part of the mixture;
-- Start with `--workers 1` or `2` on memory-constrained systems;
-- The default `--workers 4` is suitable when enough memory is available;
-- High worker counts are usually limited by memory bandwidth and increase
-  temporary memory roughly in proportion to concurrent chunks;
 - The complete mixture is still reconstructed, so narrowing the scan range
-  does not shorten the output.
+  does not shorten the output;
+- Keep `--workers` at or below your CPU core count. Beyond that it stops
+  getting faster and only costs more memory.
 
-When both the mixture scan range and reference are no longer than four hours,
-the original full-correlation search is used to preserve common-case matching
-behavior. If either is longer, the program automatically switches to the
-streaming fingerprint index: FFmpeg audio blocks are piped directly into
-feature generation without retaining the complete waveform or FFT and without
-creating analysis files. At the 24-hour limit, the index and streaming windows
-remain well below the total 8 GiB budget. Four workers primarily increase
-concurrent cancellation-chunk memory; they do not create four copies of the
-index.
+### Memory
+
+With the default `--workers 4`:
+
+- ordinary jobs stay under 3 GB;
+- a 24-hour file stays under 8 GB.
+
+Each extra worker adds to the peak, so lower `--workers` if memory is tight.
+Long files are handled without loading the whole audio at once, so a 24-hour
+job needs only a little more memory than a short one.
 
 ## Tests
 

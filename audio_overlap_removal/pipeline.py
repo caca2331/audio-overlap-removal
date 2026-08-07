@@ -40,7 +40,6 @@ from .models import (
 )
 from .parallel import _bounded_ordered_map
 
-
 _MOMENTUM_ALIGN_SR = 4_000
 _MOMENTUM_PROBE_SEC = 8.0
 _MOMENTUM_SEARCH_SEC = 2.0

@@ -3,6 +3,8 @@
 /output/
 /extra-test-out/
 /.venv/
+/.venv-build/
+/.claude/skills/
 /.pytest_cache/
 /.ruff_cache/
 /build/

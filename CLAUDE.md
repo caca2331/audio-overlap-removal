@@ -70,3 +70,5 @@ audio-overlap-removal mix.webm ref.webm out.flac --segments seg.json --report ru
   及其实测数据。提出「换个相消器」之前先读，避免重复已做过的实验。
 - [`README.md`](README.md) / [`README.zh-CN.md`](README.zh-CN.md)：面向
   用户的完整选项、格式与声道矩阵。改 CLI 或行为时同步。
+- [`docs/packaging.md`](docs/packaging.md)：PyInstaller onedir 独立分发的
+  构建方式、三平台注意事项与 FFmpeg 查找顺序。

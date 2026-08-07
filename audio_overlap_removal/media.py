@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -18,10 +21,115 @@ DEFAULT_SR = 48_000
 MIN_SAMPLE_RATE = 1_000
 MIN_ALIGNMENT_SAMPLE_RATE = 200
 MAX_MEDIA_DURATION_SEC = 24.0 * 60.0 * 60.0
+FFMPEG_DIR_ENV = "AOR_FFMPEG_DIR"
 _OUTPUT_FORMATS = {
     ".flac": ("FLAC", "PCM_24"),
     ".wav": ("WAV", "PCM_24"),
 }
+
+
+def _frozen_dir() -> Path | None:
+    """The directory of a packaged executable, or None when run from source."""
+    if getattr(sys, "frozen", False) or "__compiled__" in globals():
+        return Path(sys.executable).resolve().parent
+    return None
+
+
+def _preferred_tool_dirs() -> list[Path]:
+    """Locations that outrank PATH because the user chose them explicitly."""
+    dirs = []
+    override = os.environ.get(FFMPEG_DIR_ENV)
+    if override:
+        dirs.append(Path(override))
+    frozen = _frozen_dir()
+    if frozen is not None:
+        # A packaged build has no shell profile to edit, so dropping FFmpeg
+        # beside the executable has to be a supported way to install it.
+        dirs.extend([frozen, frozen / "bin"])
+    return dirs
+
+
+def _fallback_tool_dirs() -> list[Path]:
+    """Common install locations, tried only when PATH has nothing."""
+    home = Path.home()
+    if sys.platform == "win32":
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        local_app_data = os.environ.get("LOCALAPPDATA", str(home / "AppData/Local"))
+        return [
+            Path(program_files) / "ffmpeg/bin",
+            Path(r"C:\ffmpeg\bin"),
+            Path(program_data) / "chocolatey/bin",
+            home / "scoop/shims",
+            Path(local_app_data) / "Microsoft/WinGet/Links",
+        ]
+    if sys.platform == "darwin":
+        return [
+            Path("/opt/homebrew/bin"),
+            Path("/usr/local/bin"),
+            Path("/opt/local/bin"),
+            home / ".local/bin",
+        ]
+    return [
+        Path("/usr/local/bin"),
+        Path("/snap/bin"),
+        Path("/home/linuxbrew/.linuxbrew/bin"),
+        home / ".local/bin",
+    ]
+
+
+@lru_cache(maxsize=None)
+def _tool(name: str) -> str:
+    """Resolve an FFmpeg tool to an absolute path, or to its bare name.
+
+    Returning the bare name when nothing matches keeps the not-found error in
+    one place: the subprocess call that was going to run it.
+    """
+    exe = f"{name}.exe" if os.name == "nt" else name
+
+    def first_match(directories: list[Path]) -> str | None:
+        for directory in directories:
+            candidate = directory / exe
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        return None
+
+    # PATH sits in the middle: an explicit choice beats it, and the guessed
+    # install locations must never override a deliberately configured PATH.
+    return (
+        first_match(_preferred_tool_dirs())
+        or shutil.which(exe)
+        or first_match(_fallback_tool_dirs())
+        or exe
+    )
+
+
+def _child_env() -> dict[str, str] | None:
+    """Environment for FFmpeg, or None to inherit this process's.
+
+    A packaged build runs with a loader path pointing at its own bundled
+    libraries. Children inherit it, so a system FFmpeg would resolve
+    libstdc++ and friends against the versions the bundle was built with and
+    fail to start. PyInstaller stashes any pre-launch value in *_ORIG.
+    """
+    if _frozen_dir() is None:
+        return None
+    env = os.environ.copy()
+    for name in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        original = env.pop(f"{name}_ORIG", None)
+        if original is None:
+            env.pop(name, None)
+        else:
+            env[name] = original
+    return env
+
+
+def _missing_tool_message(command: str) -> str:
+    name = Path(command).stem
+    return (
+        f"{name} was not found. Install FFmpeg so that ffmpeg and ffprobe are "
+        f"on PATH, or set {FFMPEG_DIR_ENV} to the directory that contains them."
+    )
 
 
 def _run_media_command(
@@ -34,18 +142,17 @@ def _run_media_command(
             check=True,
             capture_output=True,
             text=text,
+            env=_child_env(),
         )
     except FileNotFoundError as error:
-        raise RuntimeError(
-            f"{command[0]} was not found. Install FFmpeg and ensure both "
-            "ffmpeg and ffprobe are available on PATH."
-        ) from error
+        raise RuntimeError(_missing_tool_message(command[0])) from error
     except subprocess.CalledProcessError as error:
         stderr = error.stderr
         if isinstance(stderr, bytes):
             stderr = stderr.decode(errors="replace")
         detail = (stderr or "").strip()
-        message = f"{command[0]} failed with exit code {error.returncode}"
+        # The command carries a resolved absolute path; report the tool name.
+        message = f"{Path(command[0]).stem} failed with exit code {error.returncode}"
         if detail:
             message += f": {detail}"
         raise RuntimeError(message) from error
@@ -56,7 +163,7 @@ def _probe_audio(path: str) -> dict:
     if not media.is_file():
         raise FileNotFoundError(f"Input file does not exist: {path}")
     command = [
-        "ffprobe",
+        _tool("ffprobe"),
         "-v",
         "error",
         "-select_streams",
@@ -207,7 +314,7 @@ def _iter_decode_mono_low(
     if block_frames < 1:
         raise ValueError("block_frames must be positive.")
     command = [
-        "ffmpeg",
+        _tool("ffmpeg"),
         "-nostdin",
         "-v",
         "error",
@@ -241,12 +348,10 @@ def _iter_decode_mono_low(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=_child_env(),
         )
     except FileNotFoundError as error:
-        raise RuntimeError(
-            "ffmpeg was not found. Install FFmpeg and ensure both ffmpeg "
-            "and ffprobe are available on PATH."
-        ) from error
+        raise RuntimeError(_missing_tool_message(command[0])) from error
 
     stderr_tail = bytearray()
 
@@ -313,7 +418,7 @@ def _decode_stereo(
     if source_channels not in (1, 2):
         raise ValueError("source_channels must be 1 or 2.")
     command = [
-        "ffmpeg",
+        _tool("ffmpeg"),
         "-nostdin",
         "-v",
         "error",

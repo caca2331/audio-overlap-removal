@@ -40,7 +40,8 @@
 - Python 3.10 或更高版本；
 - `ffmpeg` 和 `ffprobe` 可在 `PATH` 中运行；
 - mixture 和 reference 各自不超过 24 小时；
-- 推荐至少 8 GiB 内存；提高 `--workers` 会增加峰值内存。
+- 内存：默认 `--workers 4` 时，一般任务 3 GB 以内，24 小时音频 8 GB 以内，
+  详见[性能建议](#性能建议)。
 
 创建虚拟环境并安装：
 
@@ -67,6 +68,28 @@ python -m pip install -e .
 ```bash
 ffmpeg -version
 ffprobe -version
+```
+
+### FFmpeg 的查找位置
+
+通常放进 `PATH` 即可，但查找不止于此。`ffmpeg` 和 `ffprobe` 按以下顺序定位：
+
+1. 环境变量 `AOR_FFMPEG_DIR` 指定的目录；
+2. 可执行文件所在目录及其 `bin/` 子目录（仅独立打包版）；
+3. `PATH`；
+4. 各平台常见安装位置：Windows 的 `C:\Program Files\ffmpeg\bin`、
+   `C:\ffmpeg\bin`、Chocolatey、Scoop、WinGet；macOS 的 `/opt/homebrew/bin`、
+   `/usr/local/bin`、MacPorts；Linux 的 `/usr/local/bin`、`/snap/bin`、
+   linuxbrew、`~/.local/bin`。
+
+已配置的 `PATH` 始终优先于第 4 步猜测的位置。把 FFmpeg 复制到这些目录时要
+整份复制：shared 版的编解码器在同目录的 `av*` 动态库里，只拷 `ffmpeg` 和
+`ffprobe` 两个可执行文件是起不来的。
+
+FFmpeg 装在别处时用 `AOR_FFMPEG_DIR` 指定：
+
+```bash
+AOR_FFMPEG_DIR=/opt/ffmpeg/bin audio-overlap-removal mixture.webm reference.webm clean.flac
 ```
 
 ## 快速开始
@@ -253,16 +276,18 @@ process_audio(
 ## 性能建议
 
 - 已知媒体只出现在部分时间时，务必用 `--start/--end` 缩小扫描范围；
-- 一般从 `--workers 1` 或 `2` 开始；
-- 内存充足时可尝试 `--workers 4`；
-- worker 数过高通常受内存带宽限制，并会近似按并发块数增加临时内存；
-- 输出仍会重建完整 mixture，缩小扫描范围不会缩短输出。
+- 输出仍会重建完整 mixture，缩小扫描范围不会缩短输出；
+- `--workers` 不要超过 CPU 核心数：再往上不会更快，只会多占内存。
 
-当 mixture 扫描范围和 reference 都不超过 4 小时时，程序使用原有完整相关
-搜索，避免改变常见输入的匹配结果。任一方超过 4 小时后自动切换到流式指纹
-索引：FFmpeg 音频块经管道直接生成特征，不保留完整波形或完整 FFT，也不产生
-分析临时文件。24 小时上限下，索引和流式窗口远低于 8 GiB 总预算；4 workers
-主要增加相消块的并发内存，不会复制四份索引。
+### 内存
+
+默认 `--workers 4` 时：
+
+- 一般任务：3 GB 以内；
+- 24 小时音频：8 GB 以内。
+
+每增加一个 worker 都会抬高峰值，内存紧张时调小 `--workers`。长音频不会被
+整段读进内存，所以 24 小时的任务只比短任务多占一点。
 
 ## 测试
 

@@ -56,8 +56,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         help=(
-            "Parallel alignment queries and cancellation chunks. Higher "
-            "values use more CPU and roughly proportional temporary memory."
+            "Parallel alignment queries and cancellation chunks. Keep this at "
+            "or below the CPU core count; each worker also raises peak memory."
         ),
     )
     parser.add_argument(

@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -36,13 +37,16 @@ from audio_overlap_removal.fingerprint import (
     fingerprint_blocks,
 )
 from audio_overlap_removal.media import (
+    FFMPEG_DIR_ENV,
     _atomic_soundfile,
     _audio_channel_count,
+    _child_env,
     _decode_stereo,
     _iter_decode_mono_low,
     _output_settings,
     _paths_refer_to_same_file,
     _processing_channel_count,
+    _tool,
 )
 from audio_overlap_removal.models import _clip_alignment_segments
 from audio_overlap_removal.parallel import _bounded_ordered_map
@@ -1673,6 +1677,96 @@ def _write_drifting_fixture(
     sf.write(mixture_path, mixture, sr, subtype="FLOAT")
     sf.write(reference_path, reference, sr, subtype="FLOAT")
     return str(mixture_path), str(reference_path), mixture, target
+
+
+class FFmpegDiscoveryTests(unittest.TestCase):
+    """Resolution order for ffmpeg/ffprobe in packaged and source runs."""
+
+    def setUp(self) -> None:
+        _tool.cache_clear()
+        self.addCleanup(_tool.cache_clear)
+        environment = patch.dict(os.environ, {})
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop(FFMPEG_DIR_ENV, None)
+
+    @staticmethod
+    def _create_tool(directory: Path) -> Path:
+        executable = directory / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        executable.write_bytes(b"")
+        executable.chmod(0o755)
+        return executable
+
+    def test_env_override_outranks_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = self._create_tool(Path(directory))
+            os.environ[FFMPEG_DIR_ENV] = directory
+            with patch(
+                "audio_overlap_removal.media.shutil.which",
+                return_value="/from/path/ffmpeg",
+            ):
+                self.assertEqual(_tool("ffmpeg"), str(executable))
+
+    def test_path_outranks_guessed_install_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self._create_tool(Path(directory))
+            with (
+                patch(
+                    "audio_overlap_removal.media._fallback_tool_dirs",
+                    return_value=[Path(directory)],
+                ),
+                patch(
+                    "audio_overlap_removal.media.shutil.which",
+                    return_value="/from/path/ffmpeg",
+                ),
+            ):
+                self.assertEqual(_tool("ffmpeg"), "/from/path/ffmpeg")
+
+    def test_guessed_install_location_is_used_when_path_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = self._create_tool(Path(directory))
+            with (
+                patch(
+                    "audio_overlap_removal.media._fallback_tool_dirs",
+                    return_value=[Path(directory, "missing"), Path(directory)],
+                ),
+                patch(
+                    "audio_overlap_removal.media.shutil.which",
+                    return_value=None,
+                ),
+            ):
+                self.assertEqual(_tool("ffmpeg"), str(executable))
+
+    def test_child_env_is_inherited_when_running_from_source(self) -> None:
+        self.assertIsNone(_child_env())
+
+    def test_frozen_child_env_drops_the_bundled_loader_path(self) -> None:
+        os.environ["LD_LIBRARY_PATH"] = "/bundle/_internal"
+        with patch(
+            "audio_overlap_removal.media._frozen_dir", return_value=Path("/bundle")
+        ):
+            self.assertNotIn("LD_LIBRARY_PATH", _child_env())
+
+    def test_frozen_child_env_restores_the_original_loader_path(self) -> None:
+        os.environ["LD_LIBRARY_PATH"] = "/bundle/_internal"
+        os.environ["LD_LIBRARY_PATH_ORIG"] = "/opt/mine/lib"
+        with patch(
+            "audio_overlap_removal.media._frozen_dir", return_value=Path("/bundle")
+        ):
+            env = _child_env()
+        self.assertEqual(env["LD_LIBRARY_PATH"], "/opt/mine/lib")
+        self.assertNotIn("LD_LIBRARY_PATH_ORIG", env)
+
+    def test_bare_name_is_returned_when_nothing_matches(self) -> None:
+        with (
+            patch(
+                "audio_overlap_removal.media._fallback_tool_dirs",
+                return_value=[],
+            ),
+            patch("audio_overlap_removal.media.shutil.which", return_value=None),
+        ):
+            expected = "ffprobe.exe" if os.name == "nt" else "ffprobe"
+            self.assertEqual(_tool("ffprobe"), expected)
 
 
 class ChunkOffsetMomentumTests(unittest.TestCase):

@@ -1,0 +1,4 @@
+# These are read by a Linux container even when the checkout is on Windows,
+# where autocrlf would otherwise leave CRLF that bash and docker reject.
+*.sh text eol=lf
+Dockerfile* text eol=lf
