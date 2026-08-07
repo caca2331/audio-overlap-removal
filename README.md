@@ -41,6 +41,25 @@ Python projects can also import the `audio_overlap_removal` package directly.
 
 ## Installation
 
+### Standalone builds
+
+Windows and Apple Silicon macOS builds need no Python. Download the archive
+for your platform, unpack it, and run the `audio-overlap-removal` executable
+inside. FFmpeg is still required — see [Locating FFmpeg](#locating-ffmpeg).
+
+On macOS the build is signed but not notarized, so the first launch reports
+that the program is damaged. It is not: macOS says this about anything it
+quarantines from a download without an Apple-issued notarization ticket.
+Clear the quarantine flag once, on the unpacked directory:
+
+```bash
+xattr -dr com.apple.quarantine audio-overlap-removal-<version>-macos-arm64
+```
+
+Linux and Intel macOS have no standalone build; install from source instead.
+
+### From source
+
 Requirements:
 
 - Python 3.10 or later;

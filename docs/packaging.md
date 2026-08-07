@@ -99,10 +99,14 @@ BLAS，不必各自捆一份 OpenBLAS。Windows 侧构成：
 
 ## 用户侧的坑
 
-- **macOS**：未签名二进制被 Gatekeeper 拦截。至少 ad-hoc 签名
-  `codesign -s - --force --deep dist/audio-overlap-removal`，并在发布说明里
-  给出 `xattr -dr com.apple.quarantine <目录>`。要彻底干净需要 Apple
-  开发者账号做公证。
+- **macOS 会说程序「已损坏」，这是必然发生的，且与打包无关。** PyInstaller
+  的产物带 ad-hoc 签名但没有公证票据，凡是被 quarantine 标记的这类程序，
+  Gatekeeper 一律报 damaged——实测换归档格式、换解压方式都不影响，清掉
+  `com.apple.quarantine` 就能启动。README 里已把这一步写在显著位置。想彻底
+  免掉它需要 Apple 开发者账号（Developer ID 签名 + 公证），没有别的办法。
+- **macOS 的产物用 `ditto` 打 zip，不要换回 tar.gz。** 归档本身没问题，
+  但 The Unarchiver 解不开它——会在 numpy dist-info 下面的空目录条目上报
+  「无法打开文件」。用户装了什么解压工具不该决定下载能不能用。
 - **Windows**：SmartScreen 会对未签名程序告警；PyInstaller 产物也是杀软
   误报的常见对象。
 

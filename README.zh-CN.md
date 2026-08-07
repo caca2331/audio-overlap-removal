@@ -35,6 +35,24 @@
 
 ## 安装
 
+### 独立可执行版
+
+Windows 和 Apple Silicon macOS 提供免装 Python 的构建。下载对应平台的压缩
+包，解压后运行其中的 `audio-overlap-removal` 即可。仍然需要 FFmpeg，见
+[FFmpeg 的查找位置](#ffmpeg-的查找位置)。
+
+macOS 版有签名但未经 Apple 公证，因此首次启动会提示程序「已损坏」。它没有
+损坏：凡是从网络下载、又没有公证票据的程序，macOS 都这么报。对解压出来的
+目录清一次隔离属性即可：
+
+```bash
+xattr -dr com.apple.quarantine audio-overlap-removal-<版本>-macos-arm64
+```
+
+Linux 和 Intel macOS 不提供独立版，请按下面的方式从源码安装。
+
+### 从源码安装
+
 要求：
 
 - Python 3.10 或更高版本；
