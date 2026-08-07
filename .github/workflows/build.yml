@@ -12,10 +12,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # No Linux target: anyone running Linux can install from PyPI, and a
+  # standalone build there costs a container with an old glibc plus a
+  # verification pass on a second distribution.
+  #
+  # Each entry builds where it runs. PyInstaller cannot cross-compile, and
+  # macOS has no universal2 wheels for numpy/scipy, so each architecture
+  # needs its own runner.
   native:
-    # Windows and macOS build where they run; PyInstaller cannot cross-compile,
-    # and macOS has no universal2 wheels for numpy/scipy, so each architecture
-    # needs its own runner.
     name: ${{ matrix.tag }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -76,57 +80,4 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
-            dist/*.sha256
-
-  linux:
-    # Built in a glibc 2.28 container so the result also runs on older
-    # distributions, then verified on the runner itself: the container's
-    # FFmpeg shares the bundle's libraries and cannot expose loader-path
-    # problems that only appear against a system FFmpeg.
-    name: linux-x86_64
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build in the manylinux container
-        run: |
-          docker build -t aor-build:manylinux -f packaging/Dockerfile.manylinux packaging
-          docker run --rm -v "$PWD:/src" -w /src aor-build:manylinux \
-            bash packaging/build-manylinux.sh
-
-      - name: Take ownership of container output
-        # Not just build/ and dist/: the editable install inside the container
-        # also drops a root-owned egg-info next to the package, and the verify
-        # step's own install then cannot touch it.
-        run: sudo chown -R "$(id -u):$(id -g)" .
-
-      - uses: actions/setup-python@v5
-        with:
-          # Match the container's interpreter: the exactness check compares a
-          # container-built binary against a source install run here, and a
-          # different Python would pull different numpy/scipy wheels.
-          python-version: "3.11"
-
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: Verify against the runner's own FFmpeg
-        run: |
-          python -m venv .venv-verify
-          .venv-verify/bin/python -m pip install --quiet --upgrade pip
-          .venv-verify/bin/python -m pip install --quiet -e .
-          .venv-verify/bin/python packaging/verify.py
-
-      - name: Confirm the glibc floor
-        run: |
-          D=dist/linux-x86_64/audio-overlap-removal
-          objdump -T "$D/audio-overlap-removal" "$D"/_internal/*.so* 2>/dev/null \
-            | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | tee /tmp/floor
-          grep -qxF 'GLIBC_2.28' /tmp/floor
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-x86_64
-          path: |
-            dist/*.tar.gz
             dist/*.sha256

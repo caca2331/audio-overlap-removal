@@ -1,7 +1,11 @@
 # 独立可执行分发
 
-面向「下载解压即用、不装 Python」的用户。FFmpeg **不打进包里**——它是
-系统级依赖，用户仍需自行安装，与源码运行的前置条件保持一致。
+面向「下载解压即用、不装 Python」的用户，目标平台是 **Windows 与 macOS**。
+FFmpeg **不打进包里**——它是系统级依赖，用户仍需自行安装，与源码运行的
+前置条件保持一致。
+
+不做 Linux 分发：用 Linux 的人自己从 PyPI 装就是了，而为它出独立包要额外
+维护一个老 glibc 的构建容器，外加在第二个发行版上跑验证。
 
 ## 形态
 
@@ -14,7 +18,9 @@ libsndfile 都是原生扩展，操作系统的动态链接器（`LoadLibrary` /
 
 ## 构建
 
-PyInstaller 不能交叉编译，三个平台各构建一次。
+PyInstaller 不能交叉编译，每个目标各构建一次。日常发布交给
+[`.github/workflows/build.yml`](../.github/workflows/build.yml)，下面这套
+是本机复现用的——CI 红了要排查时，本机的迭代循环比每次等十分钟快得多。
 
 **必须在干净的虚拟环境里构建。** PyInstaller 分析的是解释器实际能看到的
 site-packages，共享环境（尤其是装了 ML 栈的 conda base）会被静态分析连坐
@@ -44,37 +50,21 @@ Windows 上把 `.venv-build/bin/python` 换成 `.venv-build\Scripts\python.exe`�
 tar.gz，因为 zip 条目不保留可执行位）、以及 `.sha256`。构建脚本会跑一次
 `--help` 冒烟测试，走完整个 import 链——`excludes` 砍错东西会在这里暴露。
 
-- Windows x64、macOS：本机按上面的流程。macOS 只能得到构建机自身的架构，
-  numpy/scipy 没有 universal2 wheel，`--target-arch universal2` 走不通，
-  Intel 与 Apple Silicon 需要两台机器（或两个 runner）；
-- Linux x64：走容器，见下。
-
-### Linux
-
-在 [`Dockerfile.manylinux`](../packaging/Dockerfile.manylinux) 定义的镜像里
-构建，图的是它 **glibc 2.28** 的底座——在老 glibc 上链接的二进制能在更新的
-发行版上跑，反过来不行。实测符号版本上限正好落在 2.28，覆盖 RHEL 8、
-Debian 10+、Ubuntu 18.10+。
-
-```bash
-docker build -t audio-overlap-removal-build:manylinux -f packaging/Dockerfile.manylinux packaging
-```
-
-```bash
-docker run --rm -v "$PWD:/src" -w /src audio-overlap-removal-build:manylinux bash packaging/build-manylinux.sh
-```
-
-镜像里额外 `dnf install python3.11`，因为 manylinux 自带的 `/opt/python/*`
-是静态编译的，没有 `libpython.so`，PyInstaller 会直接拒绝。
-
-**Linux 产物必须拿到构建容器之外的发行版上、用那台机器自己的 FFmpeg 验证**
-（见下一节）。容器内 FFmpeg 与 bundle 同源，测不出真实环境的问题。
+macOS 只能得到构建机自身的架构：numpy/scipy 没有 universal2 wheel，
+`--target-arch universal2` 走不通，Intel 与 Apple Silicon 需要两台机器
+（CI 里就是 `macos-13` 和 `macos-14` 两个 runner）。
 
 ## 体积
 
-实测：Windows x64 解包 **128.8 MB** / 压缩 **52.8 MB**，Linux x64 解包
-**208.6 MB** / 压缩 **57.7 MB**（Linux 多出 libgfortran、libstdc++ 等运行时
-库）。Windows 侧构成：
+CI 实测：
+
+| 目标 | 解包 | 压缩档 |
+| --- | --- | --- |
+| windows-x86_64 | 129.1 MB | 53.0 MB |
+| macos-arm64 | 91.2 MB | 29.6 MB |
+
+macOS 小 38 MB，因为 Apple Silicon 上 numpy/scipy 用系统的 Accelerate 做
+BLAS，不必各自捆一份 OpenBLAS。Windows 侧构成：
 
 | 组成 | MB |
 | --- | --- |
@@ -94,11 +84,11 @@ docker run --rm -v "$PWD:/src" -w /src audio-overlap-removal-build:manylinux bas
   一个字节都省不掉，砍掉必然在运行期崩。
 - numpy 和 scipy 各带一份 OpenBLAS（39 MB），编译产物与符号后缀不同，
   不能去重。
-- `ssl` 已排除（约 1 MB）。`_hashlib` 看着也是死重量（还能再省 5 MB，
-  应用确实从不用它），但 Linux 上 PyInstaller 会加 `pkg_resources` 运行时
-  钩子，它在 `main()` 之前 import `_hashlib`，排除后程序启动即崩——
-  Windows 上不引入这个钩子所以测不出来。**往列表里加东西前，每个平台都要
-  实测**，4% 的体积不值得换平台相关的脆弱性。
+- `ssl` 已排除（约 1 MB）。`_hashlib` 还能再省 5 MB，应用也确实从不用它，
+  但排除它曾让 Linux 构建启动即崩：PyInstaller 在那边会加 `pkg_resources`
+  运行时钩子，在 `main()` 之前 import 它，而 Windows 不引入这个钩子，所以
+  当时是在 Linux 的冒烟测试里才暴露。Linux 已不是发布目标，这 5 MB 因此
+  可以重新评估，但**要在 Windows 和两个 macOS 架构上都实测通过**才能动。
 - **不要开 UPX**：能再砍掉约一半解包体积，但会破坏部分 numpy/scipy 的
   DLL，并显著抬高杀软误报率。
 
@@ -116,15 +106,16 @@ docker run --rm -v "$PWD:/src" -w /src audio-overlap-removal-build:manylinux bas
 
 ## 子进程的 loader 路径
 
-Linux/macOS 上 PyInstaller 会给冻结进程注入
-`LD_LIBRARY_PATH=<bundle>/_internal`（macOS 对应 `DYLD_LIBRARY_PATH`）。
-FFmpeg 子进程继承它之后，会去加载 bundle 里那份构建容器编译的
-`libstdc++.so.6`，缺 `GLIBCXX_3.4.29` 而无法启动——系统 FFmpeg 越新越容易
-撞上。`media.py` 的 `_child_env()` 在 spawn 前把这个变量还原成
-PyInstaller 存下的 `*_ORIG`（原本没有就直接删掉）。
+类 Unix 平台上 PyInstaller 会给冻结进程注入指向 bundle 自身的
+`DYLD_LIBRARY_PATH`（Linux 上是 `LD_LIBRARY_PATH`）。FFmpeg 子进程继承它
+之后，会拿 bundle 里那份构建时的库去解析自己的依赖，系统 FFmpeg 越新越
+容易撞上版本不匹配而无法启动。`media.py` 的 `_child_env()` 在 spawn 前把
+这个变量还原成 PyInstaller 存下的 `*_ORIG`（原本没有就直接删掉）。
 
-这个缺陷只在 Linux 打包版 + 系统 FFmpeg 的组合下出现，构建容器内部因为
-两者同源而测不出来。
+这个缺陷是在 Linux 上发现的（系统 ffprobe 拿 bundle 的 `libstdc++.so.6`
+去解析，缺 `GLIBCXX_3.4.29`）。macOS 的机制相同，所以修复对两边都保留。
+它只在打包版 + 系统 FFmpeg 的组合下出现，构建机上因为两者同源而测不出来
+——**首次发布 macOS 版前，务必在一台装了 Homebrew FFmpeg 的 Mac 上实跑**。
 
 ## FFmpeg 查找顺序
 
