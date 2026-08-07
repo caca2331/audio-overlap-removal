@@ -341,14 +341,37 @@ Peak memory in GB is roughly
 max(0.2 + 0.8 * workers, scan)
 ```
 
-where `scan` is `0.6 * hours` for inputs up to four hours and `0.1 +
-0.1 * hours` beyond that — longer inputs switch to a streaming index, so a
-24-hour file needs no more than a four-hour one. `--chunk` and
-`--sample-rate` scale the per-worker term proportionally.
+The scan term depends on which search runs — see [`--scan-mode`](#scan-mode):
 
-At the default `--workers 4` that is **about 3.4 GB for any duration, so
-4 GB is enough**. Lower `--workers` first if memory is tight; past four it
-buys little speed.
+| Scan | Memory (GB) | Time |
+| --- | --- | --- |
+| `correlation` | `0.6 * hours` | grows with the square of the length |
+| `fingerprint` | `0.1 + 0.1 * hours` | grows with the length |
+
+`--chunk` and `--sample-rate` scale the per-worker term proportionally.
+
+At the default `--workers 4` the peak is **about 3.4 GB for any duration, so
+4 GB is enough**: the cancellation phase sets it, and neither scan reaches
+that far. Lower `--workers` first if memory is tight; past four it buys
+little speed.
+
+### Scan mode
+
+`--scan-mode` chooses how the reference is located:
+
+- `auto` (default) — correlation, switching to the index once either input
+  runs longer than four hours;
+- `correlation` — compares whole decoded waveforms. More sensitive to short
+  matches, and the only path that sees a brief replay at a distant offset,
+  but its cost grows quadratically: an hour takes about 90 seconds and three
+  hours about 13 minutes;
+- `fingerprint` — queries a streamed compact index. Roughly 30 times faster
+  at a couple of hours and flat in memory, at some loss of sensitivity on
+  short matches.
+
+Force `fingerprint` when a long scan is the bottleneck and the reference
+plays in long stretches. Force `correlation` when the mixture cuts between
+distant parts of the reference and every short match matters.
 
 ## Tests
 

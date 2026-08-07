@@ -327,6 +327,7 @@ def scan_reference(
     start: float = 0.0,
     end: float | None = None,
     workers: int = 4,
+    scan_mode: str = "auto",
 ) -> list[AlignmentSegment]:
     """Locate reference-bearing segments inside a mixture time range."""
     if not np.isfinite(start) or start < 0.0:
@@ -365,6 +366,7 @@ def scan_reference(
         mixture_start_sec=start,
         mixture_duration_sec=scan_end - start,
         reference_duration_sec=reference_duration,
+        scan_mode=scan_mode,
     )
     return _clip_alignment_segments(segments, start, scan_end)
 
@@ -391,6 +393,7 @@ def remove_reference(
     report_path: str | None = None,
     sr: int = DEFAULT_SR,
     workers: int = 4,
+    scan_mode: str = "auto",
 ) -> list[AlignmentSegment]:
     """Scan a range, remove matched reference audio, and write the full mixture."""
     segments = scan_reference(
@@ -399,6 +402,7 @@ def remove_reference(
         start=start,
         end=end,
         workers=workers,
+        scan_mode=scan_mode,
     )
     process_audio(
         mixture_path,

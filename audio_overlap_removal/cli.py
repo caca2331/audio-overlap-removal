@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .alignment import SCAN_MODES
 from .media import DEFAULT_SR, MIN_SAMPLE_RATE
 from .models import AlignmentSegment, _segment_from_dict, _segment_to_dict
 from .pipeline import process_audio, scan_reference
@@ -119,6 +120,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "inside it is retried once with a wider radius."
         ),
     )
+    parser.add_argument(
+        "--scan-mode",
+        choices=SCAN_MODES,
+        default="auto",
+        help=(
+            "How to locate the reference. 'correlation' compares whole decoded "
+            "waveforms and is the more sensitive on short inputs, but its cost "
+            "grows quadratically; 'fingerprint' queries a streamed index at "
+            "roughly constant cost per hour. 'auto' switches to the index once "
+            "either input runs longer than four hours."
+        ),
+    )
     parser.add_argument("--sample-rate", type=int, default=DEFAULT_SR)
     parser.add_argument(
         "--scan-only",
@@ -216,6 +229,7 @@ def _run_cli(args: argparse.Namespace) -> None:
             start=args.start,
             end=args.end,
             workers=args.workers,
+            scan_mode=args.scan_mode,
         )
         if args.segments_out:
             _write_segments(args.segments_out, segments)

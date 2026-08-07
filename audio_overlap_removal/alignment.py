@@ -19,6 +19,8 @@ from .media import MIN_ALIGNMENT_SAMPLE_RATE, _decode_mono_low, _media_duration
 from .models import AlignmentSegment
 from .parallel import _bounded_ordered_map
 
+SCAN_MODES = ("auto", "correlation", "fingerprint")
+
 
 class _GlobalMatcher:
     """Reuse reference-side FFT and energy data across global queries."""
@@ -698,8 +700,16 @@ def discover_alignment_segments(
     mixture_duration_sec: float | None = None,
     reference_duration_sec: float | None = None,
     max_in_memory_sec: float = 4.0 * 60.0 * 60.0,
+    scan_mode: str = "auto",
 ) -> list[AlignmentSegment]:
-    """Find matching regions and recover after pauses, seeks, and replays."""
+    """Find matching regions and recover after pauses, seeks, and replays.
+
+    `scan_mode` picks the search: "correlation" compares whole decoded
+    waveforms, "fingerprint" queries a streamed compact index, and "auto"
+    takes the second only once either input passes `max_in_memory_sec`.
+    Correlation is the more sensitive of the two on short inputs but costs
+    time quadratically, so it is not a choice that stays free as media grows.
+    """
     _validate_alignment_options(
         align_sr=align_sr,
         global_step_sec=global_step_sec,
@@ -726,11 +736,20 @@ def discover_alignment_segments(
             # Synthetic/custom decoders may not refer to filesystem media.
             # The caller can pass a duration to select the indexed strategy.
             pass
-    use_index = (
-        mixture_duration_sec is not None and mixture_duration_sec > max_in_memory_sec
-    ) or (
-        reference_duration_sec is not None
-        and reference_duration_sec > max_in_memory_sec
+    if scan_mode not in SCAN_MODES:
+        raise ValueError(f"scan_mode must be one of {sorted(SCAN_MODES)}.")
+    use_index = scan_mode == "fingerprint" or (
+        scan_mode == "auto"
+        and (
+            (
+                mixture_duration_sec is not None
+                and mixture_duration_sec > max_in_memory_sec
+            )
+            or (
+                reference_duration_sec is not None
+                and reference_duration_sec > max_in_memory_sec
+            )
+        )
     )
     if use_index:
         return _discover_indexed_alignment_segments(

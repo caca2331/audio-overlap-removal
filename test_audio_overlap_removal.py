@@ -199,6 +199,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             start=120.0,
             end=360.0,
             workers=4,
+            scan_mode="auto",
         )
         process.assert_called_once_with(
             "mixture.wav",
@@ -305,6 +306,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             mixture_start_sec=120.0,
             mixture_duration_sec=240.0,
             reference_duration_sec=600.0,
+            scan_mode="auto",
         )
         self.assertEqual(segments[0].mixture_start, 120.0)
         self.assertEqual(segments[0].mixture_end, 360.0)
@@ -343,6 +345,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             start=120.0,
             end=360.0,
             workers=2,
+            scan_mode="auto",
         )
         self.assertEqual(process.call_args.kwargs["alignment_segments"], segments)
 
@@ -443,6 +446,45 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         bytes_per_window = index.memory_bytes / index.entry_count
         estimated_24_hour_index = bytes_per_window * (24 * 60 * 60 / 0.25)
         self.assertLess(estimated_24_hour_index, 1.7 * 1000**3)
+
+    def test_scan_mode_overrides_the_length_based_choice(self) -> None:
+        for scan_mode, expected in (
+            ("correlation", "full"),
+            ("fingerprint", "indexed"),
+        ):
+            with self.subTest(scan_mode=scan_mode):
+                with (
+                    patch(
+                        "audio_overlap_removal.alignment."
+                        "_discover_full_alignment_segments",
+                        return_value=[],
+                    ) as full,
+                    patch(
+                        "audio_overlap_removal.alignment."
+                        "_discover_indexed_alignment_segments",
+                        return_value=[],
+                    ) as indexed,
+                ):
+                    # Durations that would otherwise select the other path.
+                    discover_alignment_segments(
+                        "mixture.wav",
+                        "reference.wav",
+                        mixture_duration_sec=(
+                            60.0 if scan_mode == "fingerprint" else 40.0 * 3600.0
+                        ),
+                        reference_duration_sec=60.0,
+                        scan_mode=scan_mode,
+                    )
+                chosen = full if expected == "full" else indexed
+                other = indexed if expected == "full" else full
+                self.assertEqual(chosen.call_count, 1)
+                self.assertEqual(other.call_count, 0)
+
+    def test_unknown_scan_mode_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "scan_mode"):
+            discover_alignment_segments(
+                "mixture.wav", "reference.wav", scan_mode="magic"
+            )
 
     def test_alignment_strategy_preserves_short_file_fft_path(self) -> None:
         with (
