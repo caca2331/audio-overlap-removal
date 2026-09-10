@@ -35,20 +35,22 @@ ruff check audio_overlap_removal test_audio_overlap_removal.py
 真实素材一跑就是几十分钟，这几个选项用于把它拆开、观察和续跑：
 
 ```bash
-audio-overlap-removal mix.webm ref.webm --scan-only --segments-out seg.json
+audio-overlap-removal mix.webm ref.webm --scan-only
 ```
 
 ```bash
-audio-overlap-removal mix.webm ref.webm out.flac --segments seg.json --report run.jsonl
+audio-overlap-removal mix.webm ref.webm out.flac --segments mix-segments.json --log-level debug
 ```
 
 - `--scan-only` / `--segments-out` / `--segments`：扫描与消除解耦。JSON 含
   完整锚点轨迹，可手工修改 offset 后再跑，不必每次重扫。
-- `--report PATH`：逐块 JSONL，随写随 flush；中断后也能看到跑到哪一块、
-  每块的 `mode` 和全部诊断量。
+- 日志与 result 默认写在输出音频旁边（`out-log.txt` / `out-result.json` /
+  `out-segments.json`），跑到哪一块看日志、跑完分析看 result。细节见
+  [`docs/diagnostics.md`](docs/diagnostics.md)。
 - `--output-start/--output-end`：只写指定区间（对齐 context 仍可读取区间
   外）。断点续传即用它分段跑，再 `ffmpeg -f concat` 拼接；当前没有自动
-  checkpoint——原子写出是全有或全无的。
+  checkpoint——原子写出是全有或全无的。分段跑时输出音频名不同，附属文件随之
+  分开，不会互相覆盖。
 
 ## 约定
 

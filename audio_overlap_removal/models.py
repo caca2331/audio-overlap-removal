@@ -16,10 +16,16 @@ class AlignmentSegment:
     offset_slope: float = 0.0
     anchor_times: tuple[float, ...] = ()
     anchor_offsets: tuple[float, ...] = ()
+    anchor_scores: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.anchor_times) != len(self.anchor_offsets):
             raise ValueError("anchor_times and anchor_offsets must be equal length.")
+        # Hand-written segment files carry no scores at all, and clipping
+        # synthesises boundary anchors that were never measured, so the score
+        # trajectory is either absent or aligned one-for-one with NaN holes.
+        if self.anchor_scores and len(self.anchor_scores) != len(self.anchor_times):
+            raise ValueError("anchor_scores must be empty or match anchor_times.")
 
     def offset_at(self, mixture_time: float) -> float:
         """Return C-time minus B-time at one mixture timestamp.
@@ -67,6 +73,42 @@ def cancellation_profile(strength: float) -> CancellationProfile:
     )
 
 
+def _linear_residuals(segment: AlignmentSegment) -> np.ndarray:
+    """Anchor deviation from the straight-line offset model.
+
+    Deliberately not measured against ``offset_at()``: with a trajectory
+    present that method interpolates the anchors themselves, so every anchor
+    residual would be identically zero. What is worth knowing is how far the
+    real drift departs from a straight line, which is why the trajectory
+    exists at all.
+    """
+    if not segment.anchor_times:
+        return np.zeros(0, dtype=np.float64)
+    times = np.asarray(segment.anchor_times, dtype=np.float64)
+    offsets = np.asarray(segment.anchor_offsets, dtype=np.float64)
+    center = 0.5 * (segment.mixture_start + segment.mixture_end)
+    modeled = segment.offset_sec + segment.offset_slope * (times - center)
+    return offsets - modeled
+
+
+def _merge_passthrough_spans(
+    spans: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Join adjacent spans so a run of chunks reads as one region."""
+    merged: list[tuple[float, float]] = []
+    for start, end in spans:
+        if merged and start - merged[-1][1] <= 1e-6:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _json_float(value: float) -> float | None:
+    """Map the non-finite placeholders to null; JSON has no NaN."""
+    return float(value) if np.isfinite(value) else None
+
+
 def _segment_to_dict(segment: AlignmentSegment) -> dict:
     """Serialise a segment, including the anchor trajectory behind offset_at."""
     return {
@@ -77,6 +119,7 @@ def _segment_to_dict(segment: AlignmentSegment) -> dict:
         "offset_slope": segment.offset_slope,
         "anchor_times": list(segment.anchor_times),
         "anchor_offsets": list(segment.anchor_offsets),
+        "anchor_scores": [_json_float(score) for score in segment.anchor_scores],
     }
 
 
@@ -95,6 +138,10 @@ def _segment_from_dict(payload: dict) -> AlignmentSegment:
             anchor_offsets=tuple(
                 float(offset) for offset in payload.get("anchor_offsets", ())
             ),
+            anchor_scores=tuple(
+                float("nan") if score is None else float(score)
+                for score in payload.get("anchor_scores", ())
+            ),
         )
     except (KeyError, TypeError) as error:
         raise ValueError(f"Invalid alignment segment: {payload!r}") from error
@@ -104,14 +151,26 @@ def _clipped_trajectory(
     segment: AlignmentSegment,
     start_sec: float,
     end_sec: float,
-) -> tuple[tuple[float, ...], tuple[float, ...]]:
+) -> tuple[tuple[float, ...], tuple[float, ...], tuple[float, ...]]:
     """Restrict an anchor trajectory to a range without moving any offset."""
     if not segment.anchor_times:
-        return (), ()
+        return (), (), ()
     times = np.asarray(segment.anchor_times, dtype=np.float64)
-    interior = times[(times > start_sec) & (times < end_sec)]
+    interior_mask = (times > start_sec) & (times < end_sec)
+    interior = times[interior_mask]
     kept_times = (start_sec, *(float(time) for time in interior), end_sec)
-    return kept_times, tuple(segment.offset_at(time) for time in kept_times)
+    kept_offsets = tuple(segment.offset_at(time) for time in kept_times)
+    if not segment.anchor_scores:
+        return kept_times, kept_offsets, ()
+    # The two boundary anchors are interpolated rather than measured, so they
+    # carry no score; NaN keeps the arrays aligned without inventing one.
+    scores = np.asarray(segment.anchor_scores, dtype=np.float64)
+    kept_scores = (
+        float("nan"),
+        *(float(score) for score in scores[interior_mask]),
+        float("nan"),
+    )
+    return kept_times, kept_offsets, kept_scores
 
 
 def _clip_alignment_segments(
@@ -129,7 +188,7 @@ def _clip_alignment_segments(
         if clipped_end <= clipped_start:
             continue
         center = 0.5 * (clipped_start + clipped_end)
-        anchor_times, anchor_offsets = _clipped_trajectory(
+        anchor_times, anchor_offsets, anchor_scores = _clipped_trajectory(
             segment,
             clipped_start,
             clipped_end,
@@ -143,6 +202,7 @@ def _clip_alignment_segments(
                 offset_slope=segment.offset_slope,
                 anchor_times=anchor_times,
                 anchor_offsets=anchor_offsets,
+                anchor_scores=anchor_scores,
             )
         )
     return clipped

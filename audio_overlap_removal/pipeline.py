@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import time
 from collections.abc import Iterator
-from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import scipy.ndimage
@@ -36,9 +35,15 @@ from .media import (
 from .models import (
     AlignmentSegment,
     _clip_alignment_segments,
+    _merge_passthrough_spans,
     cancellation_profile,
 )
 from .parallel import _bounded_ordered_map
+
+if TYPE_CHECKING:
+    from .result import _RunResult
+
+logger = logging.getLogger(__name__)
 
 _MOMENTUM_ALIGN_SR = 4_000
 _MOMENTUM_PROBE_SEC = 8.0
@@ -65,6 +70,7 @@ class _ProcessingChunk:
     context_start: float
     context_duration: float
     active: AlignmentSegment | None
+    active_index: int | None
 
 
 def _iter_processing_chunks(
@@ -84,13 +90,13 @@ def _iter_processing_chunks(
     written_end = duration_sec if range_end is None else min(duration_sec, range_end)
     position = range_start
     while position < written_end - 1e-9:
-        active = next(
+        active_index, active = next(
             (
-                segment
-                for segment in alignment_segments
+                (index, segment)
+                for index, segment in enumerate(alignment_segments)
                 if segment.mixture_start <= position < segment.mixture_end
             ),
-            None,
+            (None, None),
         )
         next_active_start = min(
             (
@@ -129,6 +135,7 @@ def _iter_processing_chunks(
             context_start=context_start,
             context_duration=context_end - context_start,
             active=active,
+            active_index=active_index,
         )
         position += core_duration
 
@@ -223,9 +230,10 @@ def _momentum_offsets(
     matched = [item for item in chunks if item[1].active is not None]
     if not matched:
         return {}
-    print(
-        f"Probing {len(matched)} matched chunks at {_MOMENTUM_ALIGN_SR} Hz "
-        "for offset momentum..."
+    logger.info(
+        "Probing %d matched chunks at %d Hz for offset momentum...",
+        len(matched),
+        _MOMENTUM_ALIGN_SR,
     )
     probes = list(
         _bounded_ordered_map(
@@ -252,11 +260,13 @@ def _momentum_offsets(
     ]
     if drift:
         measured = sum(1 for offset in offsets.values() if offset.confident)
-        print(
-            f"  momentum tracked {measured}/{len(matched)} chunks directly "
-            f"(median {1_000.0 * float(np.median(drift)):+.0f}ms, "
-            f"max {1_000.0 * float(np.max(np.abs(drift))):.0f}ms "
-            "from the segment model)"
+        logger.info(
+            "  momentum tracked %d/%d chunks directly "
+            "(median %+.0fms, max %.0fms from the segment model)",
+            measured,
+            len(matched),
+            1_000.0 * float(np.median(drift)),
+            1_000.0 * float(np.max(np.abs(drift))),
         )
     return offsets
 
@@ -284,7 +294,9 @@ def _accepts_cancellation(
         "insufficient_reference_passthrough"
     ):
         return False
-    deviation = abs(diagnostics.get("aligned_start", 0.0) - predicted_start) / sr
+    deviation = (
+        abs(diagnostics.get("aligned_start_samples", 0.0) - predicted_start) / sr
+    )
     if deviation > tolerance_sec:
         return False
     score = diagnostics.get("alignment_score", 0.0)
@@ -308,16 +320,82 @@ def _chunk_mode(diagnostics: dict[str, float] | None) -> str:
     return "cancelled"
 
 
-def _merge_passthrough_spans(
-    spans: list[tuple[float, float]],
-) -> list[tuple[float, float]]:
-    merged: list[tuple[float, float]] = []
-    for start, end in spans:
-        if merged and start - merged[-1][1] <= 1e-6:
-            merged[-1] = (merged[-1][0], end)
-        else:
-            merged.append((start, end))
-    return merged
+def _chunk_payload(
+    index: int,
+    chunk: _ProcessingChunk,
+    diagnostics: dict[str, float] | None,
+) -> dict:
+    """Describe one chunk for the run result.
+
+    The bookkeeping keys are promoted to named fields; whatever the canceller
+    measured passes through untouched, so a new diagnostic needs no change
+    here to be recorded.
+    """
+    payload: dict = {
+        "index": index,
+        "start_sec": chunk.position,
+        "end_sec": chunk.position + chunk.core_duration,
+        "mode": _chunk_mode(diagnostics),
+        "segment": chunk.active_index,
+        "media_id": None if chunk.active is None else "reference",
+    }
+    if diagnostics is None:
+        return payload
+    measured = dict(diagnostics)
+    payload["reference_start_sec"] = measured.pop("reference_start_sec", None)
+    payload["offset_used_sec"] = measured.pop("offset_used_sec", None)
+    payload["offset_source"] = (
+        "momentum" if measured.pop("momentum_used", 0.0) else "trajectory"
+    )
+    payload["momentum_confident"] = bool(measured.pop("momentum_confident", 0.0))
+    payload.update(measured)
+    return payload
+
+
+def _log_chunk(
+    chunk: _ProcessingChunk, diagnostics: dict[str, float] | None
+) -> None:
+    span = f"{chunk.position:8.2f}-{chunk.position + chunk.core_duration:8.2f}s"
+    if diagnostics is None:
+        logger.info("%s pass-through (no reference match)", span)
+        return
+    warp = (
+        " warp=short"
+        if diagnostics.get("short_warp_accepted")
+        else " warp=long-validated"
+        if diagnostics.get("short_warp_considered")
+        else ""
+    )
+    retry = (
+        f" retry-radius={diagnostics['retry_radius_sec']:.2f}s"
+        if "retry_radius_sec" in diagnostics
+        else ""
+    )
+    mode = (
+        " low-confidence pass-through"
+        if diagnostics.get("low_confidence_passthrough")
+        else ""
+    )
+    logger.info(
+        "%s align=%.3f gain=%.3f [%.3f,%.3f] side-res=%.3f cleanup=%.3f "
+        "reduction=%+.1fdB%s%s%s",
+        span,
+        diagnostics["alignment_score"],
+        diagnostics["gain_median"],
+        diagnostics["gain_p05"],
+        diagnostics["gain_p95"],
+        diagnostics["side_residual_ratio"],
+        diagnostics["cleanup_output_ratio"],
+        diagnostics.get("control_reduction_db", 0.0),
+        warp,
+        retry,
+        mode,
+    )
+    if logger.isEnabledFor(logging.DEBUG):
+        detail = " ".join(
+            f"{key}={value:.6g}" for key, value in sorted(diagnostics.items())
+        )
+        logger.debug("%s %s", span, detail)
 
 
 def scan_reference(
@@ -328,6 +406,7 @@ def scan_reference(
     end: float | None = None,
     workers: int = 4,
     scan_mode: str = "auto",
+    _result: "_RunResult | None" = None,
 ) -> list[AlignmentSegment]:
     """Locate reference-bearing segments inside a mixture time range."""
     if not np.isfinite(start) or start < 0.0:
@@ -367,6 +446,7 @@ def scan_reference(
         mixture_duration_sec=scan_end - start,
         reference_duration_sec=reference_duration,
         scan_mode=scan_mode,
+        _result=_result,
     )
     return _clip_alignment_segments(segments, start, scan_end)
 
@@ -390,10 +470,10 @@ def remove_reference(
     momentum: bool = True,
     output_start: float = 0.0,
     output_end: float | None = None,
-    report_path: str | None = None,
     sr: int = DEFAULT_SR,
     workers: int = 4,
     scan_mode: str = "auto",
+    _result: "_RunResult | None" = None,
 ) -> list[AlignmentSegment]:
     """Scan a range, remove matched reference audio, and write the full mixture."""
     segments = scan_reference(
@@ -403,6 +483,7 @@ def remove_reference(
         end=end,
         workers=workers,
         scan_mode=scan_mode,
+        _result=_result,
     )
     process_audio(
         mixture_path,
@@ -421,9 +502,9 @@ def remove_reference(
         momentum=momentum,
         output_start=output_start,
         output_end=output_end,
-        report_path=report_path,
         sr=sr,
         workers=workers,
+        _result=_result,
     )
     return segments
 
@@ -445,9 +526,9 @@ def process_audio(
     momentum: bool = True,
     output_start: float = 0.0,
     output_end: float | None = None,
-    report_path: str | None = None,
     sr: int = DEFAULT_SR,
     workers: int = 4,
+    _result: "_RunResult | None" = None,
 ) -> None:
     if not np.isfinite(chunk_sec) or chunk_sec <= 0.0:
         raise ValueError("chunk_sec must be positive and finite.")
@@ -507,14 +588,44 @@ def process_audio(
     mixture_channels = _processing_channel_count(mixture_native_channels)
     reference_channels = _processing_channel_count(reference_native_channels)
     if mixture_native_channels > 2:
-        print(
-            f"Mixture has {mixture_native_channels} channels; "
-            "FFmpeg will downmix it to stereo."
+        logger.warning(
+            "Mixture has %d channels; FFmpeg will downmix it to stereo.",
+            mixture_native_channels,
         )
     if reference_native_channels > 2:
-        print(
-            f"Reference has {reference_native_channels} channels; "
-            "FFmpeg will downmix it to stereo."
+        logger.warning(
+            "Reference has %d channels; FFmpeg will downmix it to stereo.",
+            reference_native_channels,
+        )
+
+    if _result is not None:
+        _result.record_settings(
+            sample_rate=sr,
+            chunk_sec=chunk_sec,
+            context_sec=context_sec,
+            search_sec=search_sec,
+            strength=strength,
+            profile={
+                "cleanup_strength": cleanup_strength,
+                "center_strength": center_strength,
+                "center_cleanup_strength": center_cleanup_strength,
+                "silence_cleanup_strength": silence_cleanup_strength,
+            },
+            profile_overridden=(
+                cleanup_strength,
+                center_strength,
+                center_cleanup_strength,
+                silence_cleanup_strength,
+            )
+            != (
+                profile.cleanup_strength,
+                profile.center_strength,
+                profile.center_cleanup_strength,
+                profile.silence_cleanup_strength,
+            ),
+            adaptive_time_warp=adaptive_time_warp,
+            momentum=momentum,
+            workers=workers,
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -553,7 +664,7 @@ def process_audio(
         mixture: np.ndarray,
         offset: float,
         radius: float,
-    ) -> tuple[np.ndarray, dict[str, float], float]:
+    ) -> tuple[np.ndarray, dict[str, float], float, float]:
         predicted_reference_start = chunk.context_start - offset
         window_start = max(0.0, predicted_reference_start - radius)
         window_end = predicted_reference_start + chunk.context_duration + radius
@@ -565,6 +676,7 @@ def process_audio(
                 _passthrough_channels(mixture, mixture_channels),
                 _passthrough_diagnostics("insufficient_reference_passthrough"),
                 predicted_start,
+                window_start,
             )
         reference_search = _decode_stereo(
             reference_path,
@@ -588,7 +700,7 @@ def process_audio(
             predicted_start=predicted_start,
             search_radius_sec=radius,
         )
-        return cleaned, diagnostics, predicted_start
+        return cleaned, diagnostics, predicted_start, window_start
 
     def process_chunk(
         indexed_chunk: tuple[int, _ProcessingChunk],
@@ -617,7 +729,7 @@ def process_audio(
             radius = search_sec
             retried = False
             while True:
-                cleaned, diagnostics, predicted_start = cancel_attempt(
+                cleaned, diagnostics, predicted_start, window_start = cancel_attempt(
                     chunk, mixture, offset, radius
                 )
                 if retried:
@@ -648,6 +760,20 @@ def process_audio(
                     max(4.0 * search_sec, deficit + 4.0 * search_sec),
                 )
                 retried = True
+
+            diagnostics["offset_used_sec"] = offset
+            diagnostics["momentum_used"] = float(measured is not None)
+            diagnostics["momentum_confident"] = float(
+                measured is not None and measured.confident
+            )
+            if not diagnostics.get("low_confidence_passthrough"):
+                # The alignment index is relative to the decoded window, so
+                # the window origin is what turns it into a B-side timestamp.
+                diagnostics["reference_start_sec"] = (
+                    window_start
+                    + diagnostics["aligned_start_samples"] / sr
+                    + (chunk.position - chunk.context_start)
+                )
 
         core_start = int(round((chunk.position - chunk.context_start) * sr))
         core_frames = int(round(chunk.core_duration * sr))
@@ -692,14 +818,7 @@ def process_audio(
                 )
         return chunk, core, diagnostics
 
-    # The report is written as it goes and flushed per chunk, so an interrupted
-    # run still says exactly how far it got and what each chunk decided.
-    report = (
-        Path(report_path).open("w", encoding="utf-8")
-        if report_path is not None
-        else nullcontext(None)
-    )
-    with report as report_file, _atomic_soundfile(
+    with _atomic_soundfile(
         output,
         samplerate=sr,
         channels=mixture_channels,
@@ -708,22 +827,11 @@ def process_audio(
     ) as sink:
         previous_sample: float | np.ndarray | None = None
         passthrough_spans: list[tuple[float, float]] = []
-        for chunk, core, diagnostics in _bounded_ordered_map(
-            process_chunk, iter_indexed_chunks(), workers
+        for index, (chunk, core, diagnostics) in enumerate(
+            _bounded_ordered_map(process_chunk, iter_indexed_chunks(), workers)
         ):
-            if report_file is not None:
-                report_file.write(
-                    json.dumps(
-                        {
-                            "start_sec": chunk.position,
-                            "end_sec": chunk.position + chunk.core_duration,
-                            "mode": _chunk_mode(diagnostics),
-                            **(diagnostics or {}),
-                        }
-                    )
-                    + "\n"
-                )
-                report_file.flush()
+            if _result is not None:
+                _result.record_chunk(_chunk_payload(index, chunk, diagnostics))
             was_processed = diagnostics is not None and not diagnostics.get(
                 "low_confidence_passthrough"
             )
@@ -742,53 +850,19 @@ def process_audio(
             if len(core):
                 previous_sample = float(core[-1]) if core.ndim == 1 else core[-1].copy()
 
-            if diagnostics is None:
-                print(
-                    f"{chunk.position:8.2f}-"
-                    f"{chunk.position + chunk.core_duration:8.2f}s "
-                    "pass-through (no reference match)"
+            if diagnostics is not None and diagnostics.get(
+                "low_confidence_passthrough"
+            ):
+                passthrough_spans.append(
+                    (chunk.position, chunk.position + chunk.core_duration)
                 )
-            else:
-                if diagnostics.get("low_confidence_passthrough"):
-                    passthrough_spans.append(
-                        (chunk.position, chunk.position + chunk.core_duration)
-                    )
-                mode = (
-                    " low-confidence pass-through"
-                    if diagnostics.get("low_confidence_passthrough")
-                    else ""
-                )
-                warp = (
-                    " warp=short"
-                    if diagnostics.get("short_warp_accepted")
-                    else " warp=long-validated"
-                    if diagnostics.get("short_warp_considered")
-                    else ""
-                )
-                retry = (
-                    f" retry-radius={diagnostics['retry_radius_sec']:.2f}s"
-                    if "retry_radius_sec" in diagnostics
-                    else ""
-                )
-                print(
-                    f"{chunk.position:8.2f}-"
-                    f"{chunk.position + chunk.core_duration:8.2f}s "
-                    f"align={diagnostics['alignment_score']:.3f} "
-                    f"gain={diagnostics['gain_median']:.3f} "
-                    f"[{diagnostics['gain_p05']:.3f},"
-                    f"{diagnostics['gain_p95']:.3f}] "
-                    f"side-res={diagnostics['side_residual_ratio']:.3f}"
-                    f" cleanup={diagnostics['cleanup_output_ratio']:.3f}"
-                    f" reduction={diagnostics.get('control_reduction_db', 0.0):+.1f}dB"
-                    f"{warp}"
-                    f"{retry}"
-                    f"{mode}"
-                )
+            _log_chunk(chunk, diagnostics)
 
-    for start, end in _merge_passthrough_spans(passthrough_spans):
-        print(
-            f"Low-confidence pass-through inside a matched segment: "
-            f"{start:.2f}-{end:.2f}s"
+    for span_start, span_end in _merge_passthrough_spans(passthrough_spans):
+        logger.warning(
+            "Low-confidence pass-through inside a matched segment: %.2f-%.2fs",
+            span_start,
+            span_end,
         )
 
     elapsed = time.time() - started
@@ -798,10 +872,24 @@ def process_audio(
         if written_sec >= duration_sec - 1e-6
         else f", mixture {output_start:.2f}-{written_end:.2f}s"
     )
-    print(
-        f"Wrote {output} ({written_sec:.2f}s{span}, "
-        f"{'mono' if mixture_channels == 1 else 'stereo'}) "
-        f"in {elapsed:.1f}s "
-        f"(RTF={elapsed / max(written_sec, 1e-9):.3f}, "
-        f"workers={workers})."
+    logger.info(
+        "Wrote %s (%.2fs%s, %s) in %.1fs (RTF=%.3f, workers=%d).",
+        output,
+        written_sec,
+        span,
+        "mono" if mixture_channels == 1 else "stereo",
+        elapsed,
+        elapsed / max(written_sec, 1e-9),
+        workers,
     )
+    if _result is not None:
+        _result.record_output(
+            path=str(output),
+            format=output_format,
+            subtype=output_subtype,
+            sample_rate=sr,
+            channels=mixture_channels,
+            written_start_sec=output_start,
+            written_end_sec=written_end,
+            duration_sec=written_sec,
+        )

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import NamedTuple
+import logging
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import scipy.fft
@@ -16,10 +17,15 @@ from .fingerprint import (
     fingerprint_media,
 )
 from .media import MIN_ALIGNMENT_SAMPLE_RATE, _decode_mono_low, _media_duration
-from .models import AlignmentSegment
+from .models import AlignmentSegment, _linear_residuals
 from .parallel import _bounded_ordered_map
 
+if TYPE_CHECKING:
+    from .result import _RunResult
+
 SCAN_MODES = ("auto", "correlation", "fingerprint")
+
+logger = logging.getLogger(__name__)
 
 
 class _GlobalMatcher:
@@ -148,7 +154,7 @@ def _discover_full_alignment_segments(
     # Full-reference FFTs become memory-bandwidth-bound beyond two concurrent
     # queries on typical desktop CPUs. Keep cancellation workers independent.
     scan_workers = min(workers, 2)
-    print(f"Scanning alignment at {align_sr} Hz (workers={scan_workers})...")
+    logger.info("Scanning alignment at %d Hz (workers=%d)...", align_sr, scan_workers)
     decoded_mixture_duration = (
         mixture_duration_sec + query_sec if mixture_duration_sec is not None else None
     )
@@ -199,9 +205,12 @@ def _discover_full_alignment_segments(
 
     seed_absolute_time = mixture_start_sec + seed[0]
     seed_offset = seed_absolute_time - seed[1]
-    print(
-        f"  seed C={seed_absolute_time:.1f}s B={seed[1]:.3f}s "
-        f"offset={seed_offset:.3f}s score={seed[2]:.3f}"
+    logger.info(
+        "  seed C=%.1fs B=%.3fs offset=%.3fs score=%.3f",
+        seed_absolute_time,
+        seed[1],
+        seed_offset,
+        seed[2],
     )
 
     earliest = max(
@@ -285,7 +294,7 @@ def _discover_full_alignment_segments(
         local_step_sec=local_step_sec,
         query_sec=query_sec,
     )
-    _print_alignment_segments(segments)
+    _log_alignment_segments(segments)
     return segments
 
 
@@ -371,32 +380,43 @@ def _segments_from_anchors(
                     anchor_offsets=tuple(
                         float(offset) for offset in part_offsets
                     ),
+                    anchor_scores=tuple(
+                        float(score) for score in part_scores
+                    ),
                 )
             )
 
     return segments
 
 
-def _print_alignment_segments(segments: list[AlignmentSegment]) -> None:
+def _log_alignment_segments(segments: list[AlignmentSegment]) -> None:
     for segment in segments:
         # The trajectory deviation is how far the kept anchors sit from the
         # straight-line model, i.e. how much a single slope would mispredict.
-        deviation = 0.0
-        if segment.anchor_times:
-            times = np.asarray(segment.anchor_times)
-            modeled = segment.offset_sec + segment.offset_slope * (
-                times - 0.5 * (segment.mixture_start + segment.mixture_end)
-            )
-            offsets = np.asarray(segment.anchor_offsets)
-            deviation = float(np.max(np.abs(offsets - modeled)))
-        print(
-            f"  match C={segment.mixture_start:.1f}-"
-            f"{segment.mixture_end:.1f}s "
-            f"offset={segment.offset_sec:.3f}s "
-            f"speed={(1.0 - segment.offset_slope):.6f}x "
-            f"median-score={segment.median_score:.3f} "
-            f"traj-dev={1_000.0 * deviation:.0f}ms"
+        residuals = _linear_residuals(segment)
+        deviation = float(np.max(np.abs(residuals))) if len(residuals) else 0.0
+        logger.info(
+            "  match C=%.1f-%.1fs offset=%.3fs speed=%.6fx "
+            "median-score=%.3f traj-dev=%.0fms",
+            segment.mixture_start,
+            segment.mixture_end,
+            segment.offset_sec,
+            1.0 - segment.offset_slope,
+            segment.median_score,
+            1_000.0 * deviation,
         )
+        if not logger.isEnabledFor(logging.DEBUG):
+            continue
+        scores = segment.anchor_scores or (float("nan"),) * len(segment.anchor_times)
+        for anchor_time, offset, score in zip(
+            segment.anchor_times, segment.anchor_offsets, scores
+        ):
+            logger.debug(
+                "    anchor C=%.3fs offset=%.4fs score=%.3f",
+                anchor_time,
+                offset,
+                score,
+            )
 
 
 def _sequence_global_match(
@@ -499,9 +519,10 @@ def _discover_indexed_alignment_segments(
 ) -> list[AlignmentSegment]:
     """Discover long-media matches from streamed compact fingerprints."""
     scan_workers = min(workers, 2)
-    print(
-        f"Scanning long-media alignment at {align_sr} Hz "
-        f"(fingerprint index, workers={scan_workers})..."
+    logger.info(
+        "Scanning long-media alignment at %d Hz (fingerprint index, workers=%d)...",
+        align_sr,
+        scan_workers,
     )
     decoded_mixture_duration = (
         mixture_duration_sec + query_sec if mixture_duration_sec is not None else None
@@ -535,9 +556,10 @@ def _discover_indexed_alignment_segments(
     if not len(reference_track.times) or not len(mixture_track.times):
         return []
     index = FingerprintIndex([reference_track])
-    print(
-        f"  indexed {len(reference_track.times):,} reference windows "
-        f"({index.memory_bytes / (1024 * 1024):.1f} MiB compact arrays)"
+    logger.info(
+        "  indexed %s reference windows (%.1f MiB compact arrays)",
+        f"{len(reference_track.times):,}",
+        index.memory_bytes / (1024 * 1024),
     )
 
     # Both sit above the chance floor of the fingerprint, measured at 0.29 on
@@ -602,9 +624,12 @@ def _discover_indexed_alignment_segments(
     refined_seed = refine(seed_probe, seed_offset)
     if refined_seed is not None:
         seed_offset = refined_seed
-    print(
-        f"  seed C={seed[0]:.1f}s B={seed[1]:.3f}s "
-        f"offset={seed_offset:.3f}s score={seed[2]:.3f}"
+    logger.info(
+        "  seed C=%.1fs B=%.3fs offset=%.3fs score=%.3f",
+        seed[0],
+        seed[1],
+        seed_offset,
+        seed[2],
     )
     earliest_relative = max(
         0.0,
@@ -680,7 +705,7 @@ def _discover_indexed_alignment_segments(
         local_step_sec=local_step_sec,
         query_sec=query_sec,
     )
-    _print_alignment_segments(segments)
+    _log_alignment_segments(segments)
     return segments
 
 
@@ -701,6 +726,7 @@ def discover_alignment_segments(
     reference_duration_sec: float | None = None,
     max_in_memory_sec: float = 4.0 * 60.0 * 60.0,
     scan_mode: str = "auto",
+    _result: "_RunResult | None" = None,
 ) -> list[AlignmentSegment]:
     """Find matching regions and recover after pauses, seeks, and replays.
 
@@ -751,6 +777,11 @@ def discover_alignment_segments(
             )
         )
     )
+    if _result is not None:
+        _result.record_settings(
+            scan_mode=scan_mode,
+            scan_mode_used="fingerprint" if use_index else "correlation",
+        )
     if use_index:
         return _discover_indexed_alignment_segments(
             mixture_path,

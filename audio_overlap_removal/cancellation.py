@@ -442,7 +442,7 @@ def _passthrough_diagnostics(reason: str, **extra: float) -> dict[str, float]:
     """Describe a chunk that is written unmodified inside a matched segment."""
     return {
         "alignment_score": 0.0,
-        "aligned_start": 0.0,
+        "aligned_start_samples": 0.0,
         "gain_p05": 0.0,
         "gain_median": 0.0,
         "gain_p95": 0.0,
@@ -582,7 +582,7 @@ def _cancel_chunk(
 
     diagnostics = {
         "alignment_score": alignment_score,
-        "aligned_start": float(aligned_start),
+        "aligned_start_samples": float(aligned_start),
         "gain_p05": float(np.percentile(gain, 5)),
         "gain_median": float(np.median(gain)),
         "gain_p95": float(np.percentile(gain, 95)),

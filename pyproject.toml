@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio-overlap-removal"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Remove a known, time-overlapping reference track from real-world audio."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,6 +22,9 @@ audio-overlap-removal = "audio_overlap_removal.cli:main"
 
 [tool.setuptools]
 packages = ["audio_overlap_removal"]
+
+[tool.setuptools.dynamic]
+version = { attr = "audio_overlap_removal._version.__version__" }
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]

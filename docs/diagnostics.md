@@ -1,7 +1,5 @@
 # 诊断输出：日志与 result
 
-> 状态：设计已定，尚未实现。实现落地后删除本行。
-
 两个正交的可选输出，默认都落在输出音频旁边。
 
 ## 1. 职责切分
@@ -255,13 +253,14 @@ JSONL 的唯一优势是中断可见，而这条职责已由日志承担且做�
 | 文件 | 改动 |
 | --- | --- |
 | `logging_setup.py`（新，内部） | `_configure_logging(log_path, level, quiet)`；仅 CLI 调用 |
-| `result.py`（新，内部） | `_RunResult` 累加器：`record_inputs/segments/chunk/finish`，`dump(path, status)`；原子写出；默认路径推导 |
-| `__init__.py` | 挂 `NullHandler`；定义 `__version__` |
+| `result.py`（新，内部） | `_RunResult` 累加器：`record_inputs/settings/segments/output/chunk`，`dump(path, status)`；原子写出 |
+| `_version.py`（新） | `__version__` 的唯一来源，保持 import-free 供 setuptools 静态读取 |
+| `__init__.py` | 挂 `NullHandler`；转出 `__version__` |
 | `alignment.py` | 6 处 `print` → `logger.info/debug`；`anchors` 的 score 透传进 segment；scan_mode_used 记入 `_result` |
-| `pipeline.py` | 8 处 `print` → logger；`cancel_attempt` 返回 `window_start`；`process_chunk` 带出 `segment` / `offset_source`；`report_path` → `_result` |
+| `pipeline.py` | 8 处 `print` → logger；`cancel_attempt` 返回 `window_start`；`_ProcessingChunk` 加 `active_index`；`report_path` → `_result` |
 | `cancellation.py` | `aligned_start` → `aligned_start_samples` |
-| `models.py` | `AlignmentSegment` 加 `anchor_scores`；序列化同步 |
-| `cli.py` | 选项重整；构造 `_RunResult` 并在 `finally` dump；2 处 `print` → logger |
+| `models.py` | `AlignmentSegment` 加 `anchor_scores`；`_linear_residuals` 与 `_merge_passthrough_spans` 落在这里，供扫描日志与 result 共用同一定义 |
+| `cli.py` | 选项重整；`_sidecar_path` 推导默认路径；构造 `_RunResult` 并在 `finally` dump；2 处 `print` → logger |
 | `media.py` | `_probe_audio` 结果供 result；FFmpeg 命令行 `logger.debug` |
 | `pyproject.toml` | version 改 dynamic |
 | `README*.md` / `CLAUDE.md` | 同步 |

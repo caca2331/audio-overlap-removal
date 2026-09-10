@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import sys
 from pathlib import Path
 
 import numpy as np
 
 from .alignment import SCAN_MODES
+from .logging_setup import LOG_LEVELS, _configure_logging
 from .media import DEFAULT_SR, MIN_SAMPLE_RATE
 from .models import AlignmentSegment, _segment_from_dict, _segment_to_dict
 from .pipeline import process_audio, scan_reference
+from .result import ANCHOR_TIERS, _RunResult
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -140,7 +146,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--segments-out",
-        help="Write the discovered segments to this JSON file before processing.",
+        help=(
+            "Write the discovered segments here. Defaults to "
+            "<output>-segments.json, unless --segments supplied them."
+        ),
+    )
+    parser.add_argument(
+        "--no-segments-out",
+        action="store_true",
+        help="Do not write the discovered segments.",
     )
     parser.add_argument(
         "--segments",
@@ -150,8 +164,49 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--report",
-        help="Write one JSON object per processed chunk to this file, as it runs.",
+        "--log",
+        help=(
+            "Write the run log here. Defaults to <output>-log.txt beside the "
+            "output audio."
+        ),
+    )
+    parser.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Do not write a log file. The console is unaffected.",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=LOG_LEVELS,
+        default="info",
+        help="Detail level for both the console and the log file.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Show only warnings on the console; the log file keeps everything.",
+    )
+    parser.add_argument(
+        "--result",
+        help=(
+            "Write the machine-readable run result here. Defaults to "
+            "<output>-result.json beside the output audio."
+        ),
+    )
+    parser.add_argument(
+        "--no-result",
+        action="store_true",
+        help="Do not write the run result.",
+    )
+    parser.add_argument(
+        "--result-anchors",
+        choices=ANCHOR_TIERS,
+        default="summary",
+        help=(
+            "How much of each anchor trajectory the result keeps. 'summary' "
+            "records the distribution and the weakest anchors; 'full' adds "
+            "every anchor, which is large on long media."
+        ),
     )
     parser.add_argument(
         "--output-start",
@@ -177,12 +232,25 @@ def _load_segments(path: str) -> list[AlignmentSegment]:
     return [_segment_from_dict(item) for item in payload]
 
 
-def _write_segments(path: str, segments: list[AlignmentSegment]) -> None:
-    Path(path).write_text(
+def _write_segments(path: Path, segments: list[AlignmentSegment]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps([_segment_to_dict(segment) for segment in segments], indent=2),
         encoding="utf-8",
     )
-    print(f"Wrote {len(segments)} segment(s) to {path}.")
+    logger.info("Wrote %d segment(s) to %s.", len(segments), path)
+
+
+def _sidecar_path(
+    explicit: str | None, disabled: bool, base: str, suffix: str
+) -> Path | None:
+    """Resolve one companion file, defaulting to a name beside the audio."""
+    if disabled:
+        return None
+    if explicit:
+        return Path(explicit)
+    anchor = Path(base)
+    return anchor.with_name(f"{anchor.stem}-{suffix}")
 
 
 def _run_cli(args: argparse.Namespace) -> None:
@@ -219,42 +287,87 @@ def _run_cli(args: argparse.Namespace) -> None:
         and not 0.0 <= args.silence_cleanup_strength <= 1.0
     ):
         raise ValueError("--silence-cleanup-strength must be between 0 and 1.")
-    if args.segments:
-        segments = _load_segments(args.segments)
-        print(f"Loaded {len(segments)} segment(s) from {args.segments}.")
-    else:
-        segments = scan_reference(
+
+    # Companion files sit beside the output audio, so the common invocation
+    # needs no paths at all. --scan-only writes no audio, so the mixture names
+    # them instead.
+    base = args.mixture if args.scan_only else args.output
+    log_path = _sidecar_path(args.log, args.no_log, base, "log.txt")
+    result_path = _sidecar_path(args.result, args.no_result, base, "result.json")
+    segments_out = _sidecar_path(
+        args.segments_out,
+        # Segments that came from a file would only be copied back out.
+        args.no_segments_out or (bool(args.segments) and not args.segments_out),
+        base,
+        "segments.json",
+    )
+    _configure_logging(log_path, args.log_level, args.quiet)
+
+    result = (
+        _RunResult(argv=list(sys.argv), anchors=args.result_anchors)
+        if result_path is not None
+        else None
+    )
+    status = "scan-only" if args.scan_only else "complete"
+    try:
+        if result is not None:
+            result.record_inputs(args.mixture, args.reference)
+            result.record_settings(
+                segments_source=(
+                    f"file:{args.segments}" if args.segments else "scan"
+                )
+            )
+        if args.segments:
+            segments = _load_segments(args.segments)
+            logger.info(
+                "Loaded %d segment(s) from %s.", len(segments), args.segments
+            )
+        else:
+            segments = scan_reference(
+                args.mixture,
+                args.reference,
+                start=args.start,
+                end=args.end,
+                workers=args.workers,
+                scan_mode=args.scan_mode,
+                _result=result,
+            )
+        if result is not None:
+            result.record_segments(segments)
+        if segments_out is not None:
+            _write_segments(segments_out, segments)
+        if args.scan_only:
+            return
+        process_audio(
             args.mixture,
             args.reference,
-            start=args.start,
-            end=args.end,
+            args.output,
+            alignment_segments=segments,
+            chunk_sec=args.chunk,
+            search_sec=args.search,
+            strength=args.strength,
+            cleanup_strength=args.cleanup_strength,
+            center_strength=args.center_strength,
+            center_cleanup_strength=args.center_cleanup_strength,
+            silence_cleanup_strength=args.silence_cleanup_strength,
+            adaptive_time_warp=not args.disable_adaptive_warp,
+            momentum=not args.disable_momentum,
+            output_start=args.output_start,
+            output_end=args.output_end,
+            sr=args.sample_rate,
             workers=args.workers,
-            scan_mode=args.scan_mode,
+            _result=result,
         )
-        if args.segments_out:
-            _write_segments(args.segments_out, segments)
-    if args.scan_only:
-        return
-    process_audio(
-        args.mixture,
-        args.reference,
-        args.output,
-        alignment_segments=segments,
-        chunk_sec=args.chunk,
-        search_sec=args.search,
-        strength=args.strength,
-        cleanup_strength=args.cleanup_strength,
-        center_strength=args.center_strength,
-        center_cleanup_strength=args.center_cleanup_strength,
-        silence_cleanup_strength=args.silence_cleanup_strength,
-        adaptive_time_warp=not args.disable_adaptive_warp,
-        momentum=not args.disable_momentum,
-        output_start=args.output_start,
-        output_end=args.output_end,
-        report_path=args.report,
-        sr=args.sample_rate,
-        workers=args.workers,
-    )
+    except KeyboardInterrupt:
+        status = "interrupted"
+        raise
+    except BaseException:
+        status = "failed"
+        raise
+    finally:
+        # A long run that died partway is exactly when the record matters.
+        if result is not None:
+            result.dump(result_path, status)
 
 
 def main() -> None:

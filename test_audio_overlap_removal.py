@@ -1,4 +1,8 @@
+import argparse
+import contextlib
+import io
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -48,13 +52,18 @@ from audio_overlap_removal.media import (
     _processing_channel_count,
     _tool,
 )
-from audio_overlap_removal.models import _clip_alignment_segments
+from audio_overlap_removal.models import (
+    _clip_alignment_segments,
+    _linear_residuals,
+    _merge_passthrough_spans,
+    _segment_to_dict,
+)
 from audio_overlap_removal.parallel import _bounded_ordered_map
 from audio_overlap_removal.pipeline import (
     _accepts_cancellation,
     _fit_offset_trajectory,
-    _merge_passthrough_spans,
 )
+from audio_overlap_removal.result import _anchor_report, _RunResult
 
 
 class AudioOverlapRemovalTests(unittest.TestCase):
@@ -181,6 +190,9 @@ class AudioOverlapRemovalTests(unittest.TestCase):
                 "120",
                 "--end",
                 "360",
+                "--no-log",
+                "--no-result",
+                "--no-segments-out",
             ]
         )
         segments = [AlignmentSegment(120.0, 360.0, 20.0, 0.9)]
@@ -200,6 +212,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             end=360.0,
             workers=4,
             scan_mode="auto",
+            _result=None,
         )
         process.assert_called_once_with(
             "mixture.wav",
@@ -217,9 +230,9 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             momentum=True,
             output_start=0.0,
             output_end=None,
-            report_path=None,
             sr=48_000,
             workers=4,
+            _result=None,
         )
 
     def test_cli_scan_only_writes_segments_and_skips_processing(self) -> None:
@@ -241,6 +254,8 @@ class AudioOverlapRemovalTests(unittest.TestCase):
                     "--scan-only",
                     "--segments-out",
                     segments_path,
+                    "--no-log",
+                    "--no-result",
                 ]
             )
             with (
@@ -260,6 +275,8 @@ class AudioOverlapRemovalTests(unittest.TestCase):
                     "output.flac",
                     "--segments",
                     segments_path,
+                    "--no-log",
+                    "--no-result",
                 ]
             )
             with (
@@ -307,6 +324,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             mixture_duration_sec=240.0,
             reference_duration_sec=600.0,
             scan_mode="auto",
+            _result=None,
         )
         self.assertEqual(segments[0].mixture_start, 120.0)
         self.assertEqual(segments[0].mixture_end, 360.0)
@@ -346,6 +364,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             end=360.0,
             workers=2,
             scan_mode="auto",
+            _result=None,
         )
         self.assertEqual(process.call_args.kwargs["alignment_segments"], segments)
 
@@ -568,7 +587,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         audio = 0.1 * np.sin(2 * np.pi * 220 * time_axis)
         diagnostics = {
             "alignment_score": 1.0,
-            "aligned_start": 0.0,
+            "aligned_start_samples": 0.0,
             "gain_p05": 1.0,
             "gain_median": 1.0,
             "gain_p95": 1.0,
@@ -1965,17 +1984,17 @@ class ChunkOffsetMomentumTests(unittest.TestCase):
         sr = 8_000
         quiet_but_removing = {
             "alignment_score": 0.05,
-            "aligned_start": 1_000.0,
+            "aligned_start_samples": 1_000.0,
             "control_reduction_db": 4.0,
         }
         nothing_removed = {
             "alignment_score": 0.05,
-            "aligned_start": 1_000.0,
+            "aligned_start_samples": 1_000.0,
             "control_reduction_db": 0.1,
         }
         strong_but_runaway = {
             "alignment_score": 0.90,
-            "aligned_start": 40_000.0,
+            "aligned_start_samples": 40_000.0,
             "control_reduction_db": 9.0,
         }
 
@@ -2095,7 +2114,8 @@ class OffsetRecoveryIntegrationTests(unittest.TestCase):
                 Path(directory), self.sr, self.true_offset
             )
             output = Path(directory, "clean.flac")
-            report = Path(directory, "report.jsonl")
+            result_path = Path(directory, "run-result.json")
+            run_result = _RunResult(argv=None)
             process_audio(
                 mixture_path,
                 reference_path,
@@ -2107,21 +2127,32 @@ class OffsetRecoveryIntegrationTests(unittest.TestCase):
                 strength=0.0,
                 output_start=self.matched[0],
                 output_end=self.matched[1],
-                report_path=str(report),
                 sr=self.sr,
                 workers=2,
+                _result=run_result,
             )
+            run_result.dump(result_path, "complete")
             written, _ = sf.read(output, dtype="float32")
-            records = [
-                json.loads(line) for line in report.read_text().splitlines() if line
-            ]
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
 
+        records = payload["chunks"]
         self.assertEqual(len(written), int(round(16.0 * self.sr)))
         self.assertEqual(len(records), 4)
         self.assertEqual(records[0]["start_sec"], self.matched[0])
         self.assertEqual(records[-1]["end_sec"], self.matched[1])
         self.assertEqual({record["mode"] for record in records}, {"cancelled"})
         self.assertGreater(records[0]["control_reduction_db"], 1.0)
+        self.assertEqual(payload["output"]["written_start_sec"], self.matched[0])
+        self.assertEqual(payload["summary"]["chunks"]["cancelled"], 4)
+        # Every cancelled chunk must say where in the reference it landed, and
+        # the fixture puts that a known offset behind the mixture time.
+        for record in records:
+            self.assertEqual(record["segment"], 0)
+            self.assertAlmostEqual(
+                record["reference_start_sec"],
+                record["start_sec"] - self.true_offset,
+                delta=0.05,
+            )
 
     def test_unrecoverable_offset_passes_through_the_whole_file(self) -> None:
         written, mixture, target = self.run_pipeline(
@@ -2134,6 +2165,252 @@ class OffsetRecoveryIntegrationTests(unittest.TestCase):
         self.assertEqual(len(written), len(mixture))
         self.assertGreater(self.residual_ratio(written, mixture, target), 0.99)
         np.testing.assert_allclose(written, mixture, atol=2e-6, rtol=0.0)
+
+
+class DiagnosticOutputTests(unittest.TestCase):
+    """The log and the result document, and where they land by default."""
+
+    def tearDown(self) -> None:
+        self._release_log_file()
+
+    @staticmethod
+    def _release_log_file() -> None:
+        """Close the log handler so Windows can delete the temporary tree."""
+        logger = logging.getLogger("audio_overlap_removal")
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+        logger.addHandler(logging.NullHandler())
+
+    def _parse(self, *arguments: str) -> argparse.Namespace:
+        return _build_parser().parse_args(list(arguments))
+
+    def _run_with_mocks(self, args: argparse.Namespace) -> None:
+        segment = AlignmentSegment(0.0, 10.0, 1.0, 0.9)
+        with (
+            patch("audio_overlap_removal.cli.scan_reference", return_value=[segment]),
+            patch("audio_overlap_removal.cli.process_audio"),
+            patch("audio_overlap_removal.result._probe_media_info") as probe,
+        ):
+            probe.side_effect = lambda path, media_id: {
+                "media_id": media_id,
+                "path": path,
+                "duration_sec": 10.0,
+                "sample_rate": 48_000,
+                "channels": 2,
+                "size_bytes": 1,
+            }
+            try:
+                _run_cli(args)
+            finally:
+                self._release_log_file()
+
+    def test_companion_files_default_beside_the_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory, "clean.flac")
+            self._run_with_mocks(
+                self._parse("mixture.wav", "reference.wav", str(output))
+            )
+
+            self.assertTrue(Path(directory, "clean-log.txt").is_file())
+            self.assertTrue(Path(directory, "clean-result.json").is_file())
+            self.assertTrue(Path(directory, "clean-segments.json").is_file())
+
+    def test_scan_only_names_companions_after_the_mixture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            mixture = Path(directory, "podcast.webm")
+            self._run_with_mocks(
+                self._parse(str(mixture), "reference.wav", "--scan-only")
+            )
+
+            result_path = Path(directory, "podcast-result.json")
+            self.assertTrue(result_path.is_file())
+            self.assertTrue(Path(directory, "podcast-segments.json").is_file())
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+
+        # Nothing was cancelled, so the document must say so rather than
+        # describing an output that does not exist.
+        self.assertEqual(payload["status"], "scan-only")
+        self.assertIsNone(payload["output"])
+        self.assertEqual(payload["chunks"], [])
+        self.assertEqual(len(payload["segments"]), 1)
+
+    def test_each_companion_file_can_be_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory, "clean.flac")
+            self._run_with_mocks(
+                self._parse(
+                    "mixture.wav",
+                    "reference.wav",
+                    str(output),
+                    "--no-log",
+                    "--no-result",
+                    "--no-segments-out",
+                )
+            )
+
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_loaded_segments_are_not_written_back_out(self) -> None:
+        segment = AlignmentSegment(0.0, 10.0, 1.0, 0.9)
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "seg.json")
+            source.write_text(json.dumps([_segment_to_dict(segment)]), encoding="utf-8")
+            output = Path(directory, "clean.flac")
+            self._run_with_mocks(
+                self._parse(
+                    "mixture.wav",
+                    "reference.wav",
+                    str(output),
+                    "--segments",
+                    str(source),
+                    "--no-log",
+                    "--no-result",
+                )
+            )
+            self.assertFalse(Path(directory, "clean-segments.json").exists())
+
+            # An explicit path still writes, even when the segments were read.
+            explicit = Path(directory, "copy.json")
+            self._run_with_mocks(
+                self._parse(
+                    "mixture.wav",
+                    "reference.wav",
+                    str(output),
+                    "--segments",
+                    str(source),
+                    "--segments-out",
+                    str(explicit),
+                    "--no-log",
+                    "--no-result",
+                )
+            )
+            self.assertTrue(explicit.is_file())
+
+    def test_quiet_console_does_not_silence_the_log_file(self) -> None:
+        segment = AlignmentSegment(0.0, 10.0, 1.0, 0.9)
+
+        def noisy(*_args: object, **_kwargs: object) -> None:
+            logger = logging.getLogger("audio_overlap_removal.pipeline")
+            logger.debug("chunk detail")
+            logger.warning("visible warning")
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory, "run.log")
+            args = self._parse(
+                "mixture.wav",
+                "reference.wav",
+                str(Path(directory, "clean.flac")),
+                "--log",
+                str(log_path),
+                "--log-level",
+                "debug",
+                "--quiet",
+                "--no-result",
+                "--no-segments-out",
+            )
+            stream = io.StringIO()
+            with (
+                patch(
+                    "audio_overlap_removal.cli.scan_reference", return_value=[segment]
+                ),
+                patch("audio_overlap_removal.cli.process_audio", side_effect=noisy),
+                contextlib.redirect_stderr(stream),
+            ):
+                try:
+                    _run_cli(args)
+                finally:
+                    self._release_log_file()
+            written = log_path.read_text(encoding="utf-8")
+
+        console = stream.getvalue()
+        # --quiet is about the console alone: the file still gets everything.
+        self.assertIn("visible warning", console)
+        self.assertNotIn("chunk detail", console)
+        self.assertIn("DEBUG", written)
+        self.assertIn("chunk detail", written)
+
+    def test_library_use_emits_nothing_without_a_handler(self) -> None:
+        stream = io.StringIO()
+        with contextlib.redirect_stderr(stream):
+            logging.getLogger("audio_overlap_removal.pipeline").warning("unheard")
+
+        self.assertEqual(stream.getvalue(), "")
+
+    def test_result_is_written_after_a_failure(self) -> None:
+        segment = AlignmentSegment(0.0, 10.0, 1.0, 0.9)
+        with tempfile.TemporaryDirectory() as directory:
+            result_path = Path(directory, "clean-result.json")
+            args = self._parse(
+                "mixture.wav",
+                "reference.wav",
+                str(Path(directory, "clean.flac")),
+                "--no-log",
+                "--no-segments-out",
+            )
+            with (
+                patch(
+                    "audio_overlap_removal.cli.scan_reference", return_value=[segment]
+                ),
+                patch(
+                    "audio_overlap_removal.cli.process_audio",
+                    side_effect=RuntimeError("decode died"),
+                ),
+                patch("audio_overlap_removal.result._probe_media_info") as probe,
+            ):
+                probe.side_effect = lambda path, media_id: {"media_id": media_id}
+                with self.assertRaisesRegex(RuntimeError, "decode died"):
+                    _run_cli(args)
+
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+
+        # A long run that died partway is exactly when the record matters.
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(len(payload["segments"]), 1)
+
+    def test_anchor_residual_measures_departure_from_the_linear_model(self) -> None:
+        # A curved trajectory: interpolating the anchors would report zero.
+        times = tuple(float(index) for index in range(9))
+        offsets = tuple(1.0 + 0.01 * (time - 4.0) ** 2 for time in times)
+        segment = AlignmentSegment(
+            0.0,
+            8.0,
+            1.0,
+            0.9,
+            anchor_times=times,
+            anchor_offsets=offsets,
+            anchor_scores=tuple(0.8 for _ in times),
+        )
+
+        report = _anchor_report(segment, "summary")
+
+        self.assertGreater(report["residual_sec"]["rms"], 0.0)
+        self.assertGreater(float(np.max(np.abs(_linear_residuals(segment)))), 0.0)
+
+    def test_anchor_tiers_control_what_is_kept(self) -> None:
+        times = tuple(float(index) for index in range(30))
+        segment = AlignmentSegment(
+            0.0,
+            30.0,
+            1.0,
+            0.9,
+            anchor_times=times,
+            anchor_offsets=tuple(1.0 for _ in times),
+            anchor_scores=tuple(0.5 + 0.01 * index for index in range(30)),
+        )
+
+        self.assertEqual(_anchor_report(segment, "none"), {"count": 30})
+        summary = _anchor_report(segment, "summary")
+        self.assertNotIn("times", summary)
+        self.assertEqual(len(summary["weakest"]), 10)
+        # The weakest are the lowest-scoring anchors, not the first ten.
+        self.assertEqual(
+            [entry["score"] for entry in summary["weakest"]],
+            sorted(segment.anchor_scores)[:10],
+        )
+        full = _anchor_report(segment, "full")
+        self.assertEqual(len(full["times"]), 30)
+        self.assertEqual(len(full["scores"]), 30)
 
 
 if __name__ == "__main__":

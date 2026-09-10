@@ -245,6 +245,49 @@ not persist a media library.
 `--silence-cleanup-strength` are expert overrides. Adjust `--strength` alone
 first in most cases.
 
+## Run log and result
+
+Every run writes three companion files beside the output audio, so the common
+invocation needs no extra options:
+
+```text
+clean.flac  →  clean-log.txt        Progress and diagnostics, flushed per line
+               clean-result.json    Machine-readable record of the whole run
+               clean-segments.json  Discovered segments, reusable with --segments
+```
+
+`--scan-only` writes no audio, so those files are named after the mixture
+instead. `--segments` supplies the segments from a file, so no segment file is
+written back out unless `--segments-out` names one.
+
+| Option | Default | Description |
+| --- | ---: | --- |
+| `--log PATH` | `<output>-log.txt` | Where the log file goes |
+| `--no-log` | Off | Write no log file; the console is unaffected |
+| `--log-level LEVEL` | `info` | `debug`, `info`, `warning`, or `error`, for console and file alike |
+| `--quiet` | Off | Warnings only on the console; the file still records everything |
+| `--result PATH` | `<output>-result.json` | Where the run result goes |
+| `--no-result` | Off | Write no run result |
+| `--result-anchors TIER` | `summary` | `none`, `summary`, or `full` anchor detail |
+| `--segments-out PATH` | `<output>-segments.json` | Where the discovered segments go |
+| `--no-segments-out` | Off | Write no segment file |
+
+Progress goes to stderr, leaving stdout free. To watch the detail live while
+keeping the console readable:
+
+```bash
+audio-overlap-removal mixture.webm reference.webm clean.flac \
+  --log-level debug --quiet
+```
+
+The result document records the settings that actually ran, both inputs, the
+output, every matched segment with its reference-side span and anchor
+statistics, one entry per chunk (mode, reference timestamp, alignment score,
+gain, measured reduction), and a summary. It is written even when a run is
+interrupted or fails, with `status` saying which. `--result-anchors full` adds
+every anchor, which reaches several MB on long media. See
+[`docs/diagnostics.md`](docs/diagnostics.md) for the schema.
+
 ## Formats and channel layouts
 
 ### Input
@@ -418,10 +461,12 @@ audio-overlap-removal/
 │   ├── alignment.py       # Reference scanning and timeline matching
 │   ├── cancellation.py    # Signal alignment, cancellation, and cleanup
 │   ├── fingerprint.py     # Streaming fingerprints and candidate index
+│   ├── logging_setup.py   # Console and file logging for the CLI
 │   ├── media.py           # FFmpeg decoding, probing, and atomic output
 │   ├── models.py          # Public data models and strength profiles
 │   ├── parallel.py        # Bounded, order-preserving parallel execution
 │   ├── pipeline.py        # Independently callable high-level pipeline
+│   ├── result.py          # The run result document
 │   └── cli.py             # Command-line options and entry point
 ├── test_audio_overlap_removal.py  # Algorithm, API, and I/O regressions
 ├── pyproject.toml                 # Package metadata, dependencies, and CLI

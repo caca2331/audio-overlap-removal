@@ -226,6 +226,44 @@ process_audio(
 `--center-cleanup-strength` 和 `--silence-cleanup-strength` 是专家级覆盖项。
 通常先只调整 `--strength`。
 
+## 运行日志与结果
+
+每次运行都会在输出音频旁边写三个附属文件，常用命令因此不需要任何额外参数：
+
+```text
+clean.flac  →  clean-log.txt        进度与诊断，逐行落盘
+               clean-result.json    整轮运行的机读记录
+               clean-segments.json  发现的段落，可用 --segments 复用
+```
+
+`--scan-only` 不写音频，这些文件改用 mixture 的名字。`--segments` 从文件读入
+段落时不会再写回一份，除非用 `--segments-out` 显式指定路径。
+
+| 参数 | 默认值 | 说明 |
+| --- | ---: | --- |
+| `--log PATH` | `<输出>-log.txt` | 日志文件位置 |
+| `--no-log` | 关闭 | 不写日志文件；控制台不受影响 |
+| `--log-level LEVEL` | `info` | `debug`/`info`/`warning`/`error`，控制台与文件同级 |
+| `--quiet` | 关闭 | 控制台只留警告；文件仍记录全部 |
+| `--result PATH` | `<输出>-result.json` | 运行结果位置 |
+| `--no-result` | 关闭 | 不写运行结果 |
+| `--result-anchors TIER` | `summary` | 锚点详细程度：`none`/`summary`/`full` |
+| `--segments-out PATH` | `<输出>-segments.json` | 段落文件位置 |
+| `--no-segments-out` | 关闭 | 不写段落文件 |
+
+进度输出走 stderr，stdout 保持干净。想在文件里留全量、同时让控制台清爽：
+
+```bash
+audio-overlap-removal mixture.webm reference.webm clean.flac \
+  --log-level debug --quiet
+```
+
+结果文档记录实际生效的参数、两个输入、输出、每个匹配段（含参考侧区间与锚点
+统计）、逐块记录（mode、参考时间戳、对齐分数、增益、实测削减量）以及汇总。
+运行被中断或失败时同样写出，由 `status` 说明是哪一种。`--result-anchors full`
+会附上全部锚点，长素材可达数 MB。schema 见
+[`docs/diagnostics.md`](docs/diagnostics.md)。
+
 ## 格式与声道兼容性
 
 ### 输入
@@ -372,10 +410,12 @@ audio-overlap-removal/
 │   ├── alignment.py       # 参考媒体扫描与时间轴匹配
 │   ├── cancellation.py    # 信号对齐、相消与残留清理
 │   ├── fingerprint.py     # 流式指纹和多媒体候选索引
+│   ├── logging_setup.py   # 命令行的控制台与文件日志配置
 │   ├── media.py           # FFmpeg 解码、探测和原子写出
 │   ├── models.py          # 公共数据模型与强度配置
 │   ├── parallel.py        # 有界、保序的并行执行
 │   ├── pipeline.py        # 可独立调用的高层处理流程
+│   ├── result.py          # 运行结果文档
 │   └── cli.py             # 命令行参数与入口
 ├── test_audio_overlap_removal.py  # 算法、模块接口与 I/O 回归测试
 ├── pyproject.toml                 # 包配置、依赖与命令行入口

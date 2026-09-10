@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -26,6 +27,8 @@ _OUTPUT_FORMATS = {
     ".flac": ("FLAC", "PCM_24"),
     ".wav": ("WAV", "PCM_24"),
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _frozen_dir() -> Path | None:
@@ -136,6 +139,9 @@ def _run_media_command(
     command: list[str], *, text: bool = False
 ) -> subprocess.CompletedProcess:
     """Run FFmpeg/FFprobe and preserve the useful diagnostic on failure."""
+    # Reproducing a decode problem by hand needs the exact arguments, which
+    # were previously visible only in the exception raised on failure.
+    logger.debug("run %s", subprocess.list2cmdline(command))
     try:
         return subprocess.run(
             command,
@@ -169,7 +175,7 @@ def _probe_audio(path: str) -> dict:
         "-select_streams",
         "a:0",
         "-show_entries",
-        "stream=channels,duration:format=duration",
+        "stream=channels,sample_rate,duration:format=duration",
         "-of",
         "json",
         str(media),
@@ -187,8 +193,7 @@ def _probe_audio(path: str) -> dict:
     return payload
 
 
-def _media_duration(path: str) -> float:
-    payload = _probe_audio(path)
+def _duration_from_payload(payload: dict, path: str) -> float:
     candidates = [
         (payload.get("format") or {}).get("duration"),
         (payload.get("streams") or [{}])[0].get("duration"),
@@ -201,6 +206,31 @@ def _media_duration(path: str) -> float:
         if np.isfinite(duration) and duration > 0.0:
             return duration
     raise ValueError(f"Could not determine the duration of {path!r}.")
+
+
+def _media_duration(path: str) -> float:
+    return _duration_from_payload(_probe_audio(path), path)
+
+
+def _probe_media_info(path: str, media_id: str) -> dict:
+    """Describe one input for the run result."""
+    payload = _probe_audio(path)
+    stream = (payload.get("streams") or [{}])[0]
+
+    def integer(value: object) -> int | None:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "media_id": media_id,
+        "path": str(Path(path)),
+        "duration_sec": _duration_from_payload(payload, path),
+        "sample_rate": integer(stream.get("sample_rate")),
+        "channels": integer(stream.get("channels")),
+        "size_bytes": Path(path).stat().st_size,
+    }
 
 
 def _audio_channel_count(path: str) -> int:
