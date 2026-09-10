@@ -72,3 +72,5 @@ audio-overlap-removal mix.webm ref.webm out.flac --segments seg.json --report ru
   用户的完整选项、格式与声道矩阵。改 CLI 或行为时同步。
 - [`docs/packaging.md`](docs/packaging.md)：PyInstaller onedir 独立分发的
   构建方式、三平台注意事项与 FFmpeg 查找顺序。
+- [`docs/diagnostics.md`](docs/diagnostics.md)：日志与 result JSON 的职责
+  切分、默认文件名、完整 schema 与锚点三档。改诊断输出前先读。
