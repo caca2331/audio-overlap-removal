@@ -312,6 +312,17 @@ def _accepts_cancellation(
     return votes >= 2
 
 
+# Every pass-through reason fills the measurement keys with placeholders. A
+# widened retry currently turns all of them into low_confidence_passthrough
+# before they reach here, but nothing derived from a placeholder may be
+# reported as measured if that ever stops being true.
+_PASSTHROUGH_REASONS = (
+    "low_confidence_passthrough",
+    "coverage_passthrough",
+    "insufficient_reference_passthrough",
+)
+
+
 def _chunk_mode(diagnostics: dict[str, float] | None) -> str:
     if diagnostics is None:
         return "unmatched"
@@ -766,7 +777,9 @@ def process_audio(
             diagnostics["momentum_confident"] = float(
                 measured is not None and measured.confident
             )
-            if not diagnostics.get("low_confidence_passthrough"):
+            if not any(
+                diagnostics.get(reason) for reason in _PASSTHROUGH_REASONS
+            ):
                 # The alignment index is relative to the decoded window, so
                 # the window origin is what turns it into a B-side timestamp.
                 diagnostics["reference_start_sec"] = (

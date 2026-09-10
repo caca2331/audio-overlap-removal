@@ -2368,6 +2368,49 @@ class DiagnosticOutputTests(unittest.TestCase):
         self.assertEqual(payload["status"], "failed")
         self.assertEqual(len(payload["segments"]), 1)
 
+    @unittest.skipUnless(
+        shutil.which("ffmpeg") and shutil.which("ffprobe"),
+        "FFmpeg is required for the short-reference result test.",
+    )
+    def test_chunks_without_a_real_alignment_report_no_reference_time(self) -> None:
+        sr = 8_000
+        rng = np.random.default_rng(5)
+        # A segment that claims more reference than the reference holds: the
+        # tail chunks cannot be aligned, and must not report a timestamp
+        # derived from the placeholder diagnostics.
+        mixture_audio = (0.1 * rng.standard_normal(int(20.0 * sr))).astype(np.float32)
+        reference_audio = mixture_audio[: int(5.0 * sr)].copy()
+
+        with tempfile.TemporaryDirectory() as directory:
+            mixture = Path(directory, "mixture.wav")
+            reference = Path(directory, "reference.wav")
+            sf.write(mixture, mixture_audio, sr)
+            sf.write(reference, reference_audio, sr)
+            run_result = _RunResult(argv=None)
+            process_audio(
+                str(mixture),
+                str(reference),
+                str(Path(directory, "clean.wav")),
+                alignment_segments=[AlignmentSegment(0.0, 20.0, 0.0, 0.9)],
+                chunk_sec=5.0,
+                sr=sr,
+                workers=1,
+                _result=run_result,
+            )
+            result_path = Path(directory, "result.json")
+            run_result.dump(result_path, "complete")
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+
+        modes = {chunk["mode"] for chunk in payload["chunks"]}
+        self.assertNotEqual(modes, {"cancelled"}, "fixture never ran short")
+        for chunk in payload["chunks"]:
+            if chunk["mode"] == "cancelled":
+                self.assertIsNotNone(chunk["reference_start_sec"])
+            else:
+                self.assertIsNone(chunk["reference_start_sec"])
+        # The run must still cover the whole mixture.
+        self.assertEqual(payload["summary"]["seconds"]["total"], 20.0)
+
     def test_anchor_residual_measures_departure_from_the_linear_model(self) -> None:
         # A curved trajectory: interpolating the anchors would report zero.
         times = tuple(float(index) for index in range(9))
