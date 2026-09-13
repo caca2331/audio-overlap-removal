@@ -949,6 +949,108 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         self.assertTrue(any(abs(value - 14.0) < 0.15 for value in offsets))
         self.assertEqual(parallel_segments, segments)
 
+    def test_reacquired_segments_start_where_the_replay_starts(self) -> None:
+        """A slow reacquisition must not shorten the segment it recovers.
+
+        With ``reacquire_after_sec`` at 3 s the global search fires only 3 s
+        after the tracker is lost; the skipped local steps are walked back
+        from the recovered offset so each replayed span starts at its true
+        start, and a replay shorter than the reacquisition delay still forms
+        a segment.
+        """
+        sr = 500
+        rng = np.random.default_rng(303)
+        reference = rng.standard_normal(12 * sr).astype(np.float32)
+        mixture = (0.01 * rng.standard_normal(30 * sr)).astype(np.float32)
+
+        def copy_region(start: float, end: float, reference_start: float) -> None:
+            count = int(round((end - start) * sr))
+            mix_start = int(round(start * sr))
+            ref_start = int(round(reference_start * sr))
+            mixture[mix_start : mix_start + count] += reference[
+                ref_start : ref_start + count
+            ]
+
+        copy_region(2.0, 8.0, 0.0)
+        copy_region(10.0, 16.0, 6.0)
+        # A 4 s replay: shorter than reacquisition delay plus two steps.
+        copy_region(19.0, 23.0, 2.0)
+
+        def decode(path, requested_sr, start_sec, duration_sec):
+            return mixture.copy() if path == "mixture" else reference.copy()
+
+        with patch(
+            "audio_overlap_removal.alignment._decode_mono_low", side_effect=decode
+        ):
+            segments = discover_alignment_segments(
+                "mixture",
+                "reference",
+                align_sr=sr,
+                global_step_sec=1.0,
+                query_sec=1.0,
+                local_step_sec=0.5,
+                local_search_sec=0.10,
+                min_score=0.50,
+                reacquire_after_sec=3.0,
+                reacquire_interval_sec=1.0,
+                workers=1,
+            )
+
+        by_offset = {round(segment.offset_sec): segment for segment in segments}
+        self.assertEqual(sorted(by_offset), [2, 4, 17])
+        self.assertLess(abs(by_offset[4].mixture_start - 10.0), 0.6)
+        self.assertLess(abs(by_offset[17].mixture_start - 19.0), 0.6)
+
+    def test_indexed_reacquisition_backfills_the_skipped_steps(self) -> None:
+        sr = 500
+        rng = np.random.default_rng(406)
+        reference = rng.standard_normal(24 * sr).astype(np.float32)
+        mixture = (0.05 * rng.standard_normal(30 * sr)).astype(np.float32)
+
+        def copy_region(start: float, end: float, reference_start: float) -> None:
+            frames = int(round((end - start) * sr))
+            mixture_index = int(round(start * sr))
+            reference_index = int(round(reference_start * sr))
+            mixture[mixture_index : mixture_index + frames] += reference[
+                reference_index : reference_index + frames
+            ]
+
+        copy_region(2.0, 8.0, 0.0)
+        copy_region(12.0, 20.0, 4.0)
+        reference_track = fingerprint_blocks(
+            [reference], "reference", sr=sr, query_sec=2.0
+        )
+        mixture_track = fingerprint_blocks([mixture], "mixture", sr=sr, query_sec=2.0)
+
+        def build_track(path: str, media_id: str, **kwargs):
+            return reference_track if media_id == "reference" else mixture_track
+
+        with patch(
+            "audio_overlap_removal.alignment.fingerprint_media",
+            side_effect=build_track,
+        ):
+            segments = discover_alignment_segments(
+                "mixture",
+                "reference",
+                align_sr=sr,
+                global_step_sec=1.0,
+                query_sec=2.0,
+                local_step_sec=0.5,
+                local_search_sec=0.30,
+                min_score=0.18,
+                reacquire_after_sec=3.0,
+                reacquire_interval_sec=1.0,
+                workers=1,
+                mixture_duration_sec=30.0,
+                reference_duration_sec=24.0,
+                max_in_memory_sec=0.0,
+            )
+
+        replay = [segment for segment in segments if abs(segment.offset_sec - 8.0) < 0.3]
+        self.assertEqual(len(replay), 1)
+        # Two-second fingerprint windows place a start to within about a step.
+        self.assertLess(abs(replay[0].mixture_start - 12.0), 1.2)
+
     def test_indexed_discovery_reacquires_after_pause_and_replay(self) -> None:
         sr = 500
         rng = np.random.default_rng(406)

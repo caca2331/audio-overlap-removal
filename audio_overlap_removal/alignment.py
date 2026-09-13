@@ -229,27 +229,57 @@ def _discover_full_alignment_segments(
     prefetched_global: dict[float, tuple[int, float]] = {}
     first_local_time = np.ceil(earliest / local_step_sec) * local_step_sec
     local_times = np.arange(first_local_time, latest, local_step_sec)
-    for local_index, mixture_time in enumerate(local_times):
-        mixture_time = float(mixture_time)
+    def local_match(mixture_time: float, offset: float) -> tuple[float, float] | None:
+        """Track one step from a known offset; (offset, score) or None."""
         query_start = int(round(mixture_time * align_sr))
         query = mixture[query_start : query_start + query_frames]
         absolute_time = mixture_start_sec + mixture_time
-        predicted_reference = int(round((absolute_time - tracked_offset) * align_sr))
+        predicted_reference = int(round((absolute_time - offset) * align_sr))
         search_start = max(0, predicted_reference - search_frames)
         search_end = min(
             len(reference),
             predicted_reference + query_frames + search_frames,
         )
         search = reference[search_start:search_end]
-        if len(search) >= len(query):
-            local_index, score = _best_scaled_match(search, query)
-            reference_time = (search_start + local_index) / align_sr
-            if score >= min_score:
-                tracked_offset = absolute_time - reference_time
-                anchors.append((absolute_time, tracked_offset, score))
-                last_match_time = mixture_time
-                prefetched_global.clear()
-                continue
+        if len(query) < query_frames or len(search) < len(query):
+            return None
+        hit, score = _best_scaled_match(search, query)
+        if score < min_score:
+            return None
+        return absolute_time - (search_start + hit) / align_sr, score
+
+    def backfill(local_index: int, offset: float) -> list[tuple[float, float, float]]:
+        """Walk back from a reacquisition over the steps the tracker skipped.
+
+        A reacquisition only fires ``reacquire_after_sec`` after tracking was
+        lost, so on its own it starts every replay and every resume that
+        much late, and a replay shorter than a few steps never gathers the
+        three anchors a segment needs. The new offset is a prior for the
+        skipped steps; the walk stops at the first step that does not match
+        it, which is where the previous playback state ended.
+        """
+        recovered: list[tuple[float, float, float]] = []
+        for back_index in range(local_index - 1, last_match_index, -1):
+            match = local_match(float(local_times[back_index]), offset)
+            if match is None:
+                break
+            offset, score = match
+            recovered.append((mixture_start_sec + float(local_times[back_index]), offset, score))
+        recovered.reverse()
+        return recovered
+
+    last_match_index = -1
+    for local_index, mixture_time in enumerate(local_times):
+        mixture_time = float(mixture_time)
+        absolute_time = mixture_start_sec + mixture_time
+        match = local_match(mixture_time, tracked_offset)
+        if match is not None:
+            tracked_offset, score = match
+            anchors.append((absolute_time, tracked_offset, score))
+            last_match_time = mixture_time
+            last_match_index = local_index
+            prefetched_global.clear()
+            continue
 
         # A pause, seek, replay, or truncation invalidates the local prediction.
         # Search globally only after the tracker has genuinely been lost, then
@@ -286,8 +316,10 @@ def _discover_full_alignment_segments(
             if global_score >= max(0.25, min_score):
                 reference_time = global_index / align_sr
                 tracked_offset = absolute_time - reference_time
+                anchors.extend(backfill(local_index, tracked_offset))
                 anchors.append((absolute_time, tracked_offset, global_score))
                 last_match_time = mixture_time
+                last_match_index = local_index
                 prefetched_global.clear()
 
     segments = _segments_from_anchors(
@@ -650,28 +682,50 @@ def _discover_indexed_alignment_segments(
     last_reacquire_time = seed[0] - reacquire_interval_sec
     local_radius = max(local_search_sec, 1.1 * reference_track.hop_sec)
 
-    for mixture_time_value in local_times:
-        mixture_time = float(mixture_time_value)
+    def local_match(mixture_time: float, offset: float) -> tuple[float, float] | None:
+        """Track one step from a known offset; (offset, score) or None."""
         feature = mixture_track.feature_near(mixture_time)
         if feature is None:
-            continue
-        predicted_reference = mixture_time - tracked_offset
+            return None
         local = index.best_near(
             "reference",
             feature,
-            predicted_reference,
+            mixture_time - offset,
             local_radius,
         )
-        if local is not None and local.score >= local_threshold:
-            grid_offset = mixture_time - local.time_sec
-            # Within one hop the index cannot tell whether the alignment moved,
-            # so keep the refined offset rather than letting the anchor snap to
-            # whichever grid point happened to win.
-            if abs(grid_offset - tracked_offset) > 1.1 * hop_sec:
-                refined = refine(mixture_time, grid_offset)
-                tracked_offset = grid_offset if refined is None else refined
-            anchors.append((mixture_time, tracked_offset, local.score))
+        if local is None or local.score < local_threshold:
+            return None
+        grid_offset = mixture_time - local.time_sec
+        # Within one hop the index cannot tell whether the alignment moved,
+        # so keep the refined offset rather than letting the anchor snap to
+        # whichever grid point happened to win.
+        if abs(grid_offset - offset) > 1.1 * hop_sec:
+            refined = refine(mixture_time, grid_offset)
+            offset = grid_offset if refined is None else refined
+        return offset, local.score
+
+    def backfill(local_index: int, offset: float) -> list[tuple[float, float, float]]:
+        """Walk back over the skipped steps from a reacquisition; see the
+        correlation scan for why."""
+        recovered: list[tuple[float, float, float]] = []
+        for back_index in range(local_index - 1, last_match_index, -1):
+            match = local_match(float(local_times[back_index]), offset)
+            if match is None:
+                break
+            offset, score = match
+            recovered.append((float(local_times[back_index]), offset, score))
+        recovered.reverse()
+        return recovered
+
+    last_match_index = -1
+    for local_index, mixture_time_value in enumerate(local_times):
+        mixture_time = float(mixture_time_value)
+        match = local_match(mixture_time, tracked_offset)
+        if match is not None:
+            tracked_offset, score = match
+            anchors.append((mixture_time, tracked_offset, score))
             last_match_time = mixture_time
+            last_match_index = local_index
             continue
 
         should_reacquire = (
@@ -698,8 +752,10 @@ def _discover_indexed_alignment_segments(
                 # track onto a false offset.
                 continue
             tracked_offset = grid_offset if refined is None else refined
+            anchors.extend(backfill(local_index, tracked_offset))
             anchors.append((mixture_time, tracked_offset, candidate.score))
             last_match_time = mixture_time
+            last_match_index = local_index
 
     segments = _segments_from_anchors(
         anchors,
