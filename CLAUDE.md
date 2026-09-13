@@ -76,3 +76,6 @@ audio-overlap-removal mix.webm ref.webm out.flac --segments mix-segments.json --
   构建方式、三平台注意事项与 FFmpeg 查找顺序。
 - [`docs/diagnostics.md`](docs/diagnostics.md)：日志与 result JSON 的职责
   切分、默认文件名、完整 schema 与锚点三档。改诊断输出前先读。
+- [`experiments/artifact-bench/`](experiments/artifact-bench/)：有真值的消除
+  基准（真实参考窗 + 合成播出链 + 真实主播前景）与真实素材 A/B 脚本。改
+  对齐或相消逻辑前后各跑一次，数字记入 `docs/algorithm-review.md`。

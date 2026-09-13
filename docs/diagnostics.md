@@ -182,18 +182,25 @@ JSONL 的唯一优势是中断可见，而这条职责已由日志承担且做�
       "offset_used_sec": 117.583,
       "offset_source": "momentum" | "trajectory",
       "momentum_confident": true,
+      "predicted_rate": 0.999001,          // 送入块内对齐的播放速率先验（参考秒 / 混音秒）
+      "anchor_rate": 0.999003,             // 块内锚点最终采用的速率
+      "long_anchor_count": 117.0,          // 剔除离群后剩下的 250 ms 锚点数
 
       "alignment_score": 0.874,
       "gain_p05": 0.61, "gain_median": 0.68, "gain_p95": 0.74,
       "side_corr_median": 0.55, "foreground_guard": 0.31,
       "side_residual_ratio": 0.42, "cleanup_output_ratio": 0.63,
-      "control_reduction_db": -8.4,
+      // 清理前的 Side 残留分频带幅度比：高频不消是流媒体编解码的损伤，
+      // 低频不消才是模型的问题；只有 stereo 路径才有这四个键
+      "side_residual_ratio_0_1k": 0.30, "side_residual_ratio_1k_4k": 0.42,
+      "side_residual_ratio_4k_8k": 0.58, "side_residual_ratio_8k_up": 0.65,
+      "control_reduction_db": 8.4,         // 消得越多越正
 
       // 仅在触发时出现，字段名沿用现有诊断键
       "retry_radius_sec": 1.0,
       "short_warp_considered": 1.0, "short_warp_accepted": 1.0,
       "long_validation_score": 0.81, "short_validation_score": 0.86,
-      "coarse_prior_error_sec": 0.004,
+      "coarse_prior_error_sec": 0.004,     // 在块中心探针处比较，不受漂移影响
       "long_anchor_drift_samples": 12.0, "long_anchor_jitter_samples": 3.0,
       "coverage_deficit_start_sec": 0.0, "coverage_deficit_end_sec": 0.0
     }
@@ -203,7 +210,7 @@ JSONL 的唯一优势是中断可见，而这条职责已由日志承担且做�
     "chunks": { "total": 240, "cancelled": 231, "low_confidence": 6, "unmatched": 3 },
     "seconds": { "total": 7204.3, "cancelled": 6930.0, "low_confidence": 180.0,
                  "unmatched": 94.3, "matched_coverage": 0.985 },
-    "control_reduction_db": { "median": -8.1, "p05": -14.2, "p95": -2.3 },
+    "control_reduction_db": { "median": 8.1, "p05": 2.3, "p95": 14.2 },
     "alignment_score": { "median": 0.86, "min": 0.44 },
     "passthrough_spans": [[3120.0, 3180.0], [5400.0, 5430.0]],
     "warnings": ["reference shorter than segment 0 after 3584.9s"]

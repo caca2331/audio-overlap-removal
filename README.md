@@ -340,16 +340,21 @@ disk.
    search to preserve established behavior; longer inputs build a compact
    streaming fingerprint index;
 2. **Segment tracking and reacquisition**: rate-limited global searches run
-   after local tracking fails, handling pauses, seeks, and replays. Each
-   segment keeps the anchor trajectory it was measured from, so a long segment
-   is not reduced to a single offset and slope;
+   after local tracking fails, handling pauses, seeks, and replays, and the
+   steps skipped while waiting for a reacquisition are walked back from it,
+   so a replay starts where it really started. Each segment keeps the anchor
+   trajectory it was measured from, so a long segment is not reduced to a
+   single offset and slope;
 3. **Offset momentum**: before any cancellation, every matched chunk is probed
    at 4 kHz over a wide window. The measurements are median-filtered into a
    continuous track, so an ambiguous chunk inherits its neighbours' offset
    instead of guessing;
 4. **Local time alignment**: the chunk-local search starts from that prediction
-   rather than scanning the whole window, then anchors define a time warp, with
-   denser candidate paths validated when needed;
+   rather than scanning the whole window. 250 ms anchors are measured at the
+   playback rate the offset track implies, so a steady speed difference does
+   not smear them, anchors that jump away from their neighbours are measured
+   again next to the offset line or dropped, and the anchors then define a
+   time warp, with denser candidate paths validated when needed;
 5. **Mid/Side reference cancellation**: the Side channel, which is less
    affected by centered speech, estimates a complex transfer function while
    the reference Mid helps process centered media;
@@ -359,8 +364,9 @@ disk.
    the energy the subtraction actually removed vote on whether to keep the
    cancelled chunk. A chunk that fails is retried once with a wider reference
    window and only then passes through;
-8. **Chunked output**: chunks are written in timeline order with smoothed
-   boundaries, and every low-confidence span is listed when the run finishes.
+8. **Chunked output**: chunks are written in timeline order, consecutive
+   cancelled chunks fade into each other across their shared context, and
+   every low-confidence span is listed when the run finishes.
 
 For deeper discussion of capabilities, boundaries, and experimental findings:
 
