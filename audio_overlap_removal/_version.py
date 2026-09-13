@@ -5,4 +5,4 @@ onedir build, where ``importlib.metadata`` has no distribution to consult,
 still reports a real version.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

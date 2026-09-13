@@ -70,6 +70,7 @@ audio-overlap-removal mix.webm ref.webm out.flac --segments mix-segments.json --
 - [`docs/algorithm-review.md`](docs/algorithm-review.md)：算法审查、能力
   边界、已被否决的替代方案（MDF/PBFDAF、Wiener 掩码、2×2 Side-MIMO 等）
   及其实测数据。提出「换个相消器」之前先读，避免重复已做过的实验。
+- [`CHANGELOG.md`](CHANGELOG.md)：按版本记录面向用户的变化；打标前更新。
 - [`README.md`](README.md) / [`README.zh-CN.md`](README.zh-CN.md)：面向
   用户的完整选项、格式与声道矩阵。改 CLI 或行为时同步。
 - [`docs/packaging.md`](docs/packaging.md)：PyInstaller onedir 独立分发的

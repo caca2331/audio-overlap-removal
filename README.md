@@ -28,7 +28,11 @@ residual cleanup.
 - Reacquires after pauses, resumes, seeks, and replays;
 - Tracks each segment's offset as a measured trajectory rather than one slope,
   and re-measures every chunk in a cheap low-rate pass before cancelling;
-- Retries a chunk with a wider reference window instead of failing the run;
+- Retries a chunk with a wider reference window instead of failing the run,
+  and passes a chunk through unmodified if it fails outright;
+- Measures its 250 ms alignment anchors at the playback rate the offset track
+  implies and discards anchors that lock one period of the music away, so a
+  steady speed difference or a playback EQ no longer costs cancellation;
 - Uses 250 ms local time warping, with a validated 16 ms fine path when useful;
 - Decodes and processes in chunks instead of loading full-rate media at once;
 - Supports mono, stereo, and multichannel inputs downmixed by FFmpeg;
@@ -476,6 +480,7 @@ audio-overlap-removal/
 │   ├── _version.py        # The single source of the package version
 │   └── cli.py             # Command-line options and entry point
 ├── test_audio_overlap_removal.py  # Algorithm, API, and I/O regressions
+├── CHANGELOG.md                   # User-facing changes per version
 ├── pyproject.toml                 # Package metadata, dependencies, and CLI
 └── docs/                          # Goals, experiments, and algorithm review
 ```
