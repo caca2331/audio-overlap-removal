@@ -884,6 +884,7 @@ _PROBE_RADIUS_LADDER = (1.0, 4.0, 16.0)
 _PROBE_ACCEPT_SCORE = 0.30
 _PROBE_WIDEN_MARGIN = 0.05
 _MAX_ANCHOR_DEVIATION_SEC = 0.001
+_RESEARCH_RADIUS_SEC = 0.004
 
 
 def _prior_constrained_match(
@@ -1095,29 +1096,50 @@ def _align_reference(
         anchor_sec: float,
         minimum_low_frames: int,
         rate: float = 1.0,
-    ) -> list[tuple[float, float, float]]:
+        predict_low=None,
+        radius_low: int | None = None,
+        starts_low: np.ndarray | None = None,
+    ) -> dict[int, tuple[float, float, float]]:
+        """Measure anchors ``(centre, offset, score)`` keyed by low-rate start.
+
+        ``predict_low`` maps a low-rate query start to the expected reference
+        position of that start; by default the centre probe's hit moved at
+        ``rate``. ``radius_low`` bounds the coarse search around it and
+        ``starts_low`` restricts the measurement to some anchors, which is how
+        a suspect anchor is re-measured close to the offset line.
+        """
         anchor_frames = min(
             len(query_low),
             max(int(round(anchor_sec * low_sr)), minimum_low_frames),
         )
-        anchor_starts = np.arange(
-            0,
-            max(1, len(query_low) - anchor_frames + 1),
-            anchor_frames,
-        )
-        anchor_starts = np.unique(
-            np.append(anchor_starts, max(0, len(query_low) - anchor_frames))
-        )
+        if starts_low is None:
+            anchor_starts = np.arange(
+                0,
+                max(1, len(query_low) - anchor_frames + 1),
+                anchor_frames,
+            )
+            anchor_starts = np.unique(
+                np.append(anchor_starts, max(0, len(query_low) - anchor_frames))
+            )
+        else:
+            anchor_starts = starts_low
         read_low = rate_resampler(query_low, rate)
         read_native = rate_resampler(query_feature, rate)
-        local_radius = max(int(round(0.20 * low_sr)), 8)
+        local_radius = (
+            max(int(round(0.20 * low_sr)), 8) if radius_low is None else radius_low
+        )
         coarse_anchors: list[tuple[int, int, float]] = []
         for query_start in anchor_starts:
-            # The centre probe fixes the reference position at the probe;
-            # elsewhere in the chunk it moves at the estimated rate.
-            predicted = int(
-                round(coarse_index + probe_start + (query_start - probe_start) * rate)
-            )
+            if predict_low is None:
+                # The centre probe fixes the reference position at the probe;
+                # elsewhere in the chunk it moves at the estimated rate.
+                predicted = int(
+                    round(
+                        coarse_index + probe_start + (query_start - probe_start) * rate
+                    )
+                )
+            else:
+                predicted = int(round(predict_low(int(query_start))))
             query_window = read_low(int(query_start), anchor_frames)
             search_start = max(0, predicted - local_radius)
             search_end = min(
@@ -1133,7 +1155,7 @@ def _align_reference(
             if score >= max(0.12, 0.45 * coarse_score):
                 coarse_anchors.append((int(query_start), search_start + hit, score))
 
-        native_anchors: list[tuple[float, float, float]] = []
+        native_anchors: dict[int, tuple[float, float, float]] = {}
         fine_radius = max(2 * down, 16)
         native_anchor_frames = min(len(mixture), anchor_frames * down)
         for query_start_low, reference_start_low, score in coarse_anchors:
@@ -1158,17 +1180,20 @@ def _align_reference(
             # The hit is where the anchor *starts* in the reference; the
             # offset is reported at the anchor centre, which the reference
             # reaches ``rate`` times faster than the mixture does.
-            native_anchors.append(
-                (
-                    query_start + 0.5 * native_anchor_frames,
-                    search_start
-                    + fractional_hit
-                    - query_start
-                    + 0.5 * native_anchor_frames * (rate - 1.0),
-                    max(score, fine_score),
-                )
+            native_anchors[query_start_low] = (
+                query_start + 0.5 * native_anchor_frames,
+                search_start
+                + fractional_hit
+                - query_start
+                + 0.5 * native_anchor_frames * (rate - 1.0),
+                max(score, fine_score),
             )
         return native_anchors
+
+    def anchors_in_order(
+        anchors: dict[int, tuple[float, float, float]],
+    ) -> list[tuple[float, float, float]]:
+        return [anchors[start] for start in sorted(anchors)]
 
     def anchor_rate(
         anchors: list[tuple[float, float, float]], fallback: float
@@ -1186,26 +1211,79 @@ def _align_reference(
         slope = float(scipy.stats.theilslopes(offsets, positions)[0])
         return 1.0 + float(np.clip(slope, -0.05, 0.05))
 
-    def drop_outlier_anchors(
-        anchors: list[tuple[float, float, float]],
-    ) -> list[tuple[float, float, float]]:
-        """Discard anchors that jump away from their neighbours.
+    def resolve_outlier_anchors(
+        anchors: dict[int, tuple[float, float, float]],
+        anchor_sec: float,
+        minimum_low_frames: int,
+        rate: float,
+    ) -> dict[int, tuple[float, float, float]]:
+        """Re-measure anchors that jumped away from the others, or drop them.
 
         A quiet or repetitive passage can pass the score threshold with a
-        peak a few milliseconds off, one period of the music away. Playback
-        speed cannot move that far within a second, so an anchor more than
-        a millisecond from the median of its neighbours is a wrong peak; on
-        a benchmark with a mild EQ a handful of them cost 7 dB. Judged
-        locally rather than against one line for the whole chunk, so a real
-        jump in the stream moves the neighbourhood with it instead of losing
-        every anchor after it.
+        peak a few milliseconds off, one period of the music away, and a
+        tonal passage does it for a run of anchors in a row. Playback speed
+        cannot move that far within a second, so an anchor more than a
+        millisecond from the median of its neighbours, or from the robust
+        line through the chunk, is suspect. It is measured again inside a
+        few milliseconds of the line; the near-line peak is kept when it is
+        a credible match, otherwise the anchor is dropped. A majority off
+        the line means the line is wrong, not the anchors, and a run that
+        agrees with its own neighbours is a real jump, so both are left
+        alone.
         """
-        if len(anchors) < 5:
+        starts = sorted(anchors)
+        if len(starts) < 5:
             return anchors
-        offsets = np.array([item[1] for item in anchors])
-        local = scipy.ndimage.median_filter(offsets, size=9, mode="mirror")
-        keep = np.abs(offsets - local) <= _MAX_ANCHOR_DEVIATION_SEC * sr
-        return [anchor for anchor, kept in zip(anchors, keep) if kept]
+        positions = np.array([anchors[start][0] for start in starts])
+        offsets = np.array([anchors[start][1] for start in starts])
+        limit = _MAX_ANCHOR_DEVIATION_SEC * sr
+        size = min(17, len(starts) if len(starts) % 2 else len(starts) - 1)
+        local = scipy.ndimage.median_filter(offsets, size=size, mode="mirror")
+        slope, intercept, *_ = scipy.stats.theilslopes(offsets, positions)
+        off_line = np.abs(offsets - (slope * positions + intercept)) > limit
+        if np.count_nonzero(off_line) >= 0.3 * len(starts):
+            off_line[:] = False
+        suspect = (np.abs(offsets - local) > limit) | off_line
+        if not np.any(suspect):
+            return anchors
+
+        anchor_frames = min(
+            len(query_low),
+            max(int(round(anchor_sec * low_sr)), minimum_low_frames),
+        )
+        native_frames = min(len(mixture), anchor_frames * down)
+
+        def predict_low(query_start_low: int) -> float:
+            centre = query_start_low * down + 0.5 * native_frames
+            offset = slope * centre + intercept
+            # Reference position of the anchor start, from the offset at its
+            # centre, undoing the rate the centre is reported at.
+            return (centre + offset - 0.5 * native_frames * rate) / down
+
+        suspect_starts = np.array(
+            [start for start, flag in zip(starts, suspect) if flag]
+        )
+        remeasured = collect_native_anchors(
+            anchor_sec,
+            minimum_low_frames,
+            rate,
+            predict_low=predict_low,
+            radius_low=max(int(round(_RESEARCH_RADIUS_SEC * low_sr)), 4),
+            starts_low=suspect_starts,
+        )
+        resolved = dict(anchors)
+        for start in suspect_starts:
+            original = resolved.pop(int(start))
+            candidate = remeasured.get(int(start))
+            if candidate is None or candidate[2] < 0.5 * original[2]:
+                continue
+            # The search window is a few milliseconds wide so that the line's
+            # own error fits inside it; the peak it returns still has to sit
+            # on the line, or it is the same wrong period seen again.
+            if abs(candidate[1] - (slope * candidate[0] + intercept)) > limit:
+                continue
+            resolved[int(start)] = candidate
+        return resolved
 
     def positions_from_anchors(
         anchors: list[tuple[float, float, float]],
@@ -1304,8 +1382,8 @@ def _align_reference(
         return float(np.median(scores)), float(np.percentile(scores, 10))
 
     rate = predicted_rate
-    long_anchors = collect_native_anchors(0.25, 256, rate=rate)
-    measured_rate = anchor_rate(long_anchors, rate)
+    long_by_start = collect_native_anchors(0.25, 256, rate=rate)
+    measured_rate = anchor_rate(anchors_in_order(long_by_start), rate)
     native_long_frames = min(len(mixture), max(int(round(0.25 * low_sr)), 256) * down)
     if abs(measured_rate - rate) * native_long_frames >= 1.0:
         # The anchors disagree with the prior by at least one sample of drift
@@ -1316,8 +1394,10 @@ def _align_reference(
             query_low, search_low, rate
         )
         coarse_index = coarse_hit - probe_start
-        long_anchors = collect_native_anchors(0.25, 256, rate=rate)
-    long_anchors = drop_outlier_anchors(long_anchors)
+        long_by_start = collect_native_anchors(0.25, 256, rate=rate)
+    long_anchors = anchors_in_order(
+        resolve_outlier_anchors(long_by_start, 0.25, 256, rate)
+    )
     if diagnostics is not None:
         diagnostics["anchor_rate"] = rate
         diagnostics["long_anchor_count"] = float(len(long_anchors))
@@ -1325,8 +1405,10 @@ def _align_reference(
         long_anchors, median_size=3
     )
     if adaptive_time_warp and has_warp_evidence(long_anchors):
-        short_anchors = drop_outlier_anchors(
-            collect_native_anchors(0.016, 32, rate=rate)
+        short_anchors = anchors_in_order(
+            resolve_outlier_anchors(
+                collect_native_anchors(0.016, 32, rate=rate), 0.016, 32, rate
+            )
         )
         short_positions, short_score = positions_from_anchors(
             short_anchors, median_size=5
