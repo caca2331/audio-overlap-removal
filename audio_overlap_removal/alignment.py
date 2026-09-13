@@ -883,7 +883,7 @@ class _ReferenceAlignment(NamedTuple):
 _PROBE_RADIUS_LADDER = (1.0, 4.0, 16.0)
 _PROBE_ACCEPT_SCORE = 0.30
 _PROBE_WIDEN_MARGIN = 0.05
-_MAX_ANCHOR_DEVIATION_SEC = 0.010
+_MAX_ANCHOR_DEVIATION_SEC = 0.001
 
 
 def _prior_constrained_match(
@@ -1186,27 +1186,26 @@ def _align_reference(
         slope = float(scipy.stats.theilslopes(offsets, positions)[0])
         return 1.0 + float(np.clip(slope, -0.05, 0.05))
 
-    def drop_off_line_anchors(
+    def drop_outlier_anchors(
         anchors: list[tuple[float, float, float]],
     ) -> list[tuple[float, float, float]]:
-        """Discard anchors far from the robust straight-line offset model.
+        """Discard anchors that jump away from their neighbours.
 
         A quiet or repetitive passage can pass the score threshold with a
-        peak tens of milliseconds off. Real playback wobble is a few
-        milliseconds, so anything further is a wrong peak; but only a
-        minority may be dropped, because a majority off the line means the
-        line, not the anchors, is wrong.
+        peak a few milliseconds off, one period of the music away. Playback
+        speed cannot move that far within a second, so an anchor more than
+        a millisecond from the median of its neighbours is a wrong peak; on
+        a benchmark with a mild EQ a handful of them cost 7 dB. Judged
+        locally rather than against one line for the whole chunk, so a real
+        jump in the stream moves the neighbourhood with it instead of losing
+        every anchor after it.
         """
         if len(anchors) < 5:
             return anchors
-        positions = np.array([item[0] for item in anchors])
         offsets = np.array([item[1] for item in anchors])
-        slope, intercept, *_ = scipy.stats.theilslopes(offsets, positions)
-        deviation = np.abs(offsets - (slope * positions + intercept))
-        off_line = deviation > _MAX_ANCHOR_DEVIATION_SEC * sr
-        if np.count_nonzero(off_line) >= 0.3 * len(anchors):
-            return anchors
-        return [anchor for anchor, drop in zip(anchors, off_line) if not drop]
+        local = scipy.ndimage.median_filter(offsets, size=9, mode="mirror")
+        keep = np.abs(offsets - local) <= _MAX_ANCHOR_DEVIATION_SEC * sr
+        return [anchor for anchor, kept in zip(anchors, keep) if kept]
 
     def positions_from_anchors(
         anchors: list[tuple[float, float, float]],
@@ -1318,7 +1317,7 @@ def _align_reference(
         )
         coarse_index = coarse_hit - probe_start
         long_anchors = collect_native_anchors(0.25, 256, rate=rate)
-    long_anchors = drop_off_line_anchors(long_anchors)
+    long_anchors = drop_outlier_anchors(long_anchors)
     if diagnostics is not None:
         diagnostics["anchor_rate"] = rate
         diagnostics["long_anchor_count"] = float(len(long_anchors))
@@ -1326,7 +1325,7 @@ def _align_reference(
         long_anchors, median_size=3
     )
     if adaptive_time_warp and has_warp_evidence(long_anchors):
-        short_anchors = drop_off_line_anchors(
+        short_anchors = drop_outlier_anchors(
             collect_native_anchors(0.016, 32, rate=rate)
         )
         short_positions, short_score = positions_from_anchors(

@@ -1514,7 +1514,12 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         )
         balanced_error = np.sqrt(np.mean((balanced - target) ** 2) / np.mean(target**2))
 
-        self.assertLess(balanced_error, 0.85 * conservative_error)
+        # Side carries none of the centred reference, so its per-frame
+        # transfer cannot explain the colouration; the chunk-level static
+        # shape read from Mid must, even with the centre prior switched off,
+        # and switching it on must not undo that.
+        self.assertLess(conservative_error, 0.07)
+        self.assertLess(balanced_error, 0.10)
 
         protected, _, _ = _complex_reference_cancel(
             mixture_mid,

@@ -178,6 +178,31 @@ def _estimate_complex_transfer(
     return transfer, coherence
 
 
+def _static_transfer(
+    mixture: np.ndarray,
+    reference: np.ndarray,
+    sigma_bins: float = 2.0,
+) -> np.ndarray:
+    """One complex gain per bin for the whole chunk, read from Mid.
+
+    Over a 30 s chunk the foreground is uncorrelated with the reference, so
+    the least-squares gain converges on the reference's real colouration even
+    though every frame of Mid carries speech. That is exactly what the
+    per-frame Side estimate cannot deliver in bins where Side has no energy,
+    and what a bare scalar gain gets wrong whenever the playback path has an
+    EQ or a codec roll-off.
+    """
+    cross = np.sum(mixture * np.conj(reference), axis=1)
+    power = np.sum(np.abs(reference) ** 2, axis=1)
+    regularizer = 0.01 * np.median(power)
+    transfer = cross / (power + regularizer + 1e-14)
+    transfer = scipy.ndimage.gaussian_filter1d(
+        transfer.real, sigma_bins
+    ) + 1j * scipy.ndimage.gaussian_filter1d(transfer.imag, sigma_bins)
+    transfer *= np.minimum(1.0, 1.5 / (np.abs(transfer) + 1e-12))
+    return transfer[:, np.newaxis]
+
+
 def _complex_reference_cancel(
     mixture_mid: np.ndarray,
     mixture_side: np.ndarray,
@@ -240,7 +265,12 @@ def _complex_reference_cancel(
         )
         direct_mid_prediction = mid_transfer * reference_mid_stft
         side_mid_prediction = side_transfer * reference_mid_stft
+        # The scalar envelope explains the level; the colouration left on top
+        # of it is stationary within a chunk and is read once from Mid.
         scalar_mid_prediction = _stft(scalar_gain * reference_mid, sr)
+        scalar_mid_prediction *= _static_transfer(
+            mixture_mid_stft, scalar_mid_prediction
+        )
 
         # A centered reference component (dialogue or singing) can have almost
         # no Side energy. In those bins Side cannot identify a complex

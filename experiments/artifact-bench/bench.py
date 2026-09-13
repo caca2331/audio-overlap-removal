@@ -62,7 +62,7 @@ def opus_roundtrip(audio: np.ndarray, bitrate: str, workdir: Path, name: str) ->
     return decoded[: len(audio)]
 
 
-CHAIN_STAGES = ("eq", "drift", "gain", "codec")
+CHAIN_STAGES = ("eq", "balance", "drift", "gain", "codec")
 
 
 def broadcast_chain(
@@ -75,11 +75,12 @@ def broadcast_chain(
     """
     shaped = reference.astype(np.float64)
     if "eq" in stages:
-        # Gentle, asymmetric EQ plus a small balance change.
+        # Gentle, asymmetric EQ.
         taps = scipy.signal.firwin2(
             63, [0.0, 0.05, 0.3, 0.6, 1.0], [1.0, 1.1, 0.9, 1.05, 0.8]
         )
         shaped = scipy.signal.lfilter(taps, [1.0], shaped, axis=0)
+    if "balance" in stages:
         shaped[:, 0] *= 1.03
         shaped[:, 1] *= 0.97
     if "drift" in stages:

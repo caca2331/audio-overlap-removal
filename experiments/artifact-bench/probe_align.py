@@ -99,6 +99,11 @@ def main() -> None:
     centres = np.arange(anchor // 2, min(chunk_len, int(6.0 * SR)), anchor)
     print("first anchors, error at anchor centres (samples):",
           " ".join(f"{error[c]:+.1f}" for c in centres))
+    all_centres = np.arange(anchor // 2, chunk_len, anchor)
+    centre_errors = error[all_centres] - np.median(error[all_centres])
+    values, counts = np.unique(np.round(centre_errors).astype(int), return_counts=True)
+    print("anchor-centre error histogram (samples, relative to median):",
+          " ".join(f"{v:+d}x{c}" for v, c in zip(values, counts)))
     step = 2 * SR
     for start in range(0, chunk_len, step):
         e = error[start : start + step]
