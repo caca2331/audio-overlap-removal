@@ -57,7 +57,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "Defaults to the end of the mixture."
         ),
     )
-    parser.add_argument("--chunk", type=float, default=30.0)
+    parser.add_argument(
+        "--chunk",
+        type=float,
+        default=30.0,
+        help="Processing chunk length in seconds; each worker holds one chunk.",
+    )
     parser.add_argument(
         "--workers",
         type=int,
@@ -138,7 +143,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "either input runs longer than four hours."
         ),
     )
-    parser.add_argument("--sample-rate", type=int, default=DEFAULT_SR)
+    parser.add_argument(
+        "--sample-rate",
+        type=int,
+        default=DEFAULT_SR,
+        help="Decode, processing and output sample rate in Hz.",
+    )
     parser.add_argument(
         "--scan-only",
         action="store_true",

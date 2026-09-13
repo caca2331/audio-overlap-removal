@@ -381,7 +381,7 @@ max(0.2 + 0.8 * workers, scan)
 运行完整回归测试：
 
 ```bash
-python -m unittest -v test_audio_overlap_removal.py
+python -m pytest test_audio_overlap_removal.py -q
 ```
 
 测试覆盖动态增益、暂停、跳转/重放、速度漂移、短/长媒体扫描策略、流式
@@ -419,6 +419,7 @@ audio-overlap-removal/
 │   ├── parallel.py        # 有界、保序的并行执行
 │   ├── pipeline.py        # 可独立调用的高层处理流程
 │   ├── result.py          # 运行结果文档
+│   ├── _version.py        # 包版本号的唯一来源
 │   └── cli.py             # 命令行参数与入口
 ├── test_audio_overlap_removal.py  # 算法、模块接口与 I/O 回归测试
 ├── pyproject.toml                 # 包配置、依赖与命令行入口

@@ -85,9 +85,11 @@ logger = logging.getLogger(__name__)   # audio_overlap_removal.pipeline 等
 | 级别 | 内容 |
 | --- | --- |
 | `INFO` | 原有全部 `print`：扫描开始、seed、每段 match 摘要、每块一行摘要、写出汇总 |
-| `DEBUG` | 每块完整诊断字典、重试的窗口与半径、momentum 复测结果、锚点逐点 `(time, offset, score)`、每条 FFmpeg 命令行、fingerprint 索引规模 |
-| `WARNING` | 低置信透传、段内未匹配、coverage deficit、FFmpeg stderr 尾巴、参考被截断 |
-| `ERROR` | 块级异常后回落透传 |
+| `DEBUG` | 每块完整诊断字典（含重试半径、coverage deficit、momentum 复测结果）、锚点逐点 `(time, offset, score)`、每条 FFmpeg 命令行 |
+| `WARNING` | 低置信透传区间汇总、多声道下混提示、FFmpeg stderr 尾巴 |
+| `ERROR` | 块级异常（FFmpeg 失败、数值异常）后回落透传，附 traceback；该块在 result 里是 `low-confidence` 并带 `error_passthrough` |
+
+fingerprint 索引规模与每段 match 摘要一样是 INFO。
 
 DEBUG 的 FFmpeg 命令行是顺带补的能力：此前解码失败才在异常里看得到 stderr，重现问题得靠猜参数。
 

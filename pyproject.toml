@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.3"]
+dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]
 audio-overlap-removal = "audio_overlap_removal.cli:main"

@@ -354,6 +354,7 @@ _PASSTHROUGH_REASONS = (
     "low_confidence_passthrough",
     "coverage_passthrough",
     "insufficient_reference_passthrough",
+    "error_passthrough",
 )
 
 
@@ -417,7 +418,9 @@ def _log_chunk(
         else ""
     )
     mode = (
-        " low-confidence pass-through"
+        " error pass-through"
+        if diagnostics.get("error_passthrough")
+        else " low-confidence pass-through"
         if diagnostics.get("low_confidence_passthrough")
         else ""
     )
@@ -580,10 +583,10 @@ def process_audio(
     if (
         not np.isfinite(context_sec)
         or context_sec < 0.0
-        or not np.isfinite(search_sec)
-        or search_sec < 0.0
     ):
-        raise ValueError("context_sec and search_sec must be non-negative.")
+        raise ValueError("context_sec must be non-negative and finite.")
+    if not np.isfinite(search_sec) or search_sec <= 0.0:
+        raise ValueError("search_sec must be positive and finite.")
     if sr < MIN_SAMPLE_RATE:
         raise ValueError(f"sample rate must be at least {MIN_SAMPLE_RATE} Hz.")
     output = Path(output_path)
@@ -776,75 +779,89 @@ def process_audio(
             cleaned = original
             diagnostics = None
         else:
-            measured = measured_offsets.get(index)
-            if measured is not None:
-                offset = measured.offset
-                rate = measured.rate
-            else:
-                span_start = chunk.context_start
-                span_end = chunk.context_start + chunk.context_duration
-                offset = chunk.active.offset_at(0.5 * (span_start + span_end))
-                rate = float(
-                    _rate_from_offsets(
-                        np.array(
-                            [
-                                chunk.active.offset_at(span_start),
-                                chunk.active.offset_at(span_end),
-                            ]
-                        ),
-                        np.array([span_start, span_end]),
-                    )[0]
-                )
-            radius = search_sec
-            retried = False
-            while True:
-                cleaned, diagnostics, predicted_start, window_start = cancel_attempt(
-                    chunk, mixture, offset, rate, radius
-                )
-                if retried:
-                    diagnostics["retry_radius_sec"] = radius
-                if _accepts_cancellation(
-                    diagnostics,
-                    predicted_start,
-                    sr,
-                    2.0 * radius,
-                    measured is not None and measured.confident,
-                ):
-                    break
-                if retried:
-                    cleaned = original
-                    diagnostics["low_confidence_passthrough"] = 1.0
-                    break
-                # One widened retry recovers both recoverable failures: a
-                # window that did not span the aligned chunk, and a prior too
-                # far off to be found inside it.
-                # The measured deficit is what the first attempt's warp needed;
-                # a wider window can warp a little further still, so leave real
-                # headroom on top of it.
-                deficit = diagnostics.get(
-                    "coverage_deficit_start_sec", 0.0
-                ) + diagnostics.get("coverage_deficit_end_sec", 0.0)
-                radius = min(
-                    _MAX_RETRY_RADIUS_SEC,
-                    max(4.0 * search_sec, deficit + 4.0 * search_sec),
-                )
-                retried = True
+            try:
+                measured = measured_offsets.get(index)
+                if measured is not None:
+                    offset = measured.offset
+                    rate = measured.rate
+                else:
+                    span_start = chunk.context_start
+                    span_end = chunk.context_start + chunk.context_duration
+                    offset = chunk.active.offset_at(0.5 * (span_start + span_end))
+                    rate = float(
+                        _rate_from_offsets(
+                            np.array(
+                                [
+                                    chunk.active.offset_at(span_start),
+                                    chunk.active.offset_at(span_end),
+                                ]
+                            ),
+                            np.array([span_start, span_end]),
+                        )[0]
+                    )
+                radius = search_sec
+                retried = False
+                while True:
+                    cleaned, diagnostics, predicted_start, window_start = cancel_attempt(
+                        chunk, mixture, offset, rate, radius
+                    )
+                    if retried:
+                        diagnostics["retry_radius_sec"] = radius
+                    if _accepts_cancellation(
+                        diagnostics,
+                        predicted_start,
+                        sr,
+                        2.0 * radius,
+                        measured is not None and measured.confident,
+                    ):
+                        break
+                    if retried:
+                        cleaned = original
+                        diagnostics["low_confidence_passthrough"] = 1.0
+                        break
+                    # One widened retry recovers both recoverable failures: a
+                    # window that did not span the aligned chunk, and a prior too
+                    # far off to be found inside it.
+                    # The measured deficit is what the first attempt's warp needed;
+                    # a wider window can warp a little further still, so leave real
+                    # headroom on top of it.
+                    deficit = diagnostics.get(
+                        "coverage_deficit_start_sec", 0.0
+                    ) + diagnostics.get("coverage_deficit_end_sec", 0.0)
+                    radius = min(
+                        _MAX_RETRY_RADIUS_SEC,
+                        max(4.0 * search_sec, deficit + 4.0 * search_sec),
+                    )
+                    retried = True
 
-            diagnostics["offset_used_sec"] = offset
-            diagnostics["predicted_rate"] = rate
-            diagnostics["momentum_used"] = float(measured is not None)
-            diagnostics["momentum_confident"] = float(
-                measured is not None and measured.confident
-            )
-            if not any(
-                diagnostics.get(reason) for reason in _PASSTHROUGH_REASONS
-            ):
-                # The alignment index is relative to the decoded window, so
-                # the window origin is what turns it into a B-side timestamp.
-                diagnostics["reference_start_sec"] = (
-                    window_start
-                    + diagnostics["aligned_start_samples"] / sr
-                    + (chunk.position - chunk.context_start)
+                diagnostics["offset_used_sec"] = offset
+                diagnostics["predicted_rate"] = rate
+                diagnostics["momentum_used"] = float(measured is not None)
+                diagnostics["momentum_confident"] = float(
+                    measured is not None and measured.confident
+                )
+                if not any(
+                    diagnostics.get(reason) for reason in _PASSTHROUGH_REASONS
+                ):
+                    # The alignment index is relative to the decoded window, so
+                    # the window origin is what turns it into a B-side timestamp.
+                    diagnostics["reference_start_sec"] = (
+                        window_start
+                        + diagnostics["aligned_start_samples"] / sr
+                        + (chunk.position - chunk.context_start)
+                    )
+            except (RuntimeError, ValueError):
+                # One chunk must never end a run that is hours long: an
+                # FFmpeg failure or a numerical edge case here is logged
+                # with its traceback and the chunk is written unmodified.
+                logger.exception(
+                    "Chunk %.2f-%.2fs failed and is passed through unmodified.",
+                    chunk.position,
+                    chunk.position + chunk.core_duration,
+                )
+                cleaned = original
+                diagnostics = _passthrough_diagnostics(
+                    "error_passthrough", low_confidence_passthrough=1.0
                 )
 
         core_start = int(round((chunk.position - chunk.context_start) * sr))

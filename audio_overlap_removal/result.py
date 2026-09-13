@@ -208,20 +208,15 @@ class _RunResult:
         seconds["matched_coverage"] = (
             seconds["cancelled"] / total_sec if total_sec > 0.0 else 0.0
         )
+        # A passed-through chunk carries placeholder measurements; only what
+        # was actually cancelled says anything about the cancellation.
+        cancelled = [chunk for chunk in self._chunks if chunk["mode"] == "cancelled"]
         reductions = np.array(
-            [
-                chunk["control_reduction_db"]
-                for chunk in self._chunks
-                if chunk.get("control_reduction_db") is not None
-            ],
+            [chunk["control_reduction_db"] for chunk in cancelled],
             dtype=np.float64,
         )
         scores = np.array(
-            [
-                chunk["alignment_score"]
-                for chunk in self._chunks
-                if chunk.get("alignment_score") is not None
-            ],
+            [chunk["alignment_score"] for chunk in cancelled],
             dtype=np.float64,
         )
         return {

@@ -427,7 +427,7 @@ distant parts of the reference and every short match matters.
 Run the complete regression suite:
 
 ```bash
-python -m unittest -v test_audio_overlap_removal.py
+python -m pytest test_audio_overlap_removal.py -q
 ```
 
 Tests cover dynamic gain, pauses, seeks/replays, speed drift, short- and
@@ -473,6 +473,7 @@ audio-overlap-removal/
 │   ├── parallel.py        # Bounded, order-preserving parallel execution
 │   ├── pipeline.py        # Independently callable high-level pipeline
 │   ├── result.py          # The run result document
+│   ├── _version.py        # The single source of the package version
 │   └── cli.py             # Command-line options and entry point
 ├── test_audio_overlap_removal.py  # Algorithm, API, and I/O regressions
 ├── pyproject.toml                 # Package metadata, dependencies, and CLI

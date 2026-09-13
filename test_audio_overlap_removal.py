@@ -2348,6 +2348,74 @@ class ChunkSeamTests(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(np.diff(added)))), 1e-3)
 
 
+class ChunkFailureTests(unittest.TestCase):
+    def test_a_failing_chunk_passes_through_and_the_run_continues(self) -> None:
+        sr = 8_000
+        seconds = 6
+        rng = np.random.default_rng(9)
+        mixture = (0.05 * rng.standard_normal((seconds * sr, 2))).astype(np.float32)
+        reference = (0.05 * rng.standard_normal((seconds * sr, 2))).astype(np.float32)
+        calls: list[int] = []
+
+        def failing_cancel(mixture_chunk, reference_search, sr_, *args, **kwargs):
+            calls.append(len(calls))
+            if len(calls) == 2:
+                raise RuntimeError("ffmpeg failed with exit code 1: simulated")
+            cleaned = 0.5 * (mixture_chunk[:, 0] + mixture_chunk[:, 1]) + 0.01
+            return cleaned.astype(np.float32), {
+                "alignment_score": 0.9,
+                "aligned_start_samples": float(kwargs["predicted_start"]),
+                "control_reduction_db": 6.0,
+                "gain_p05": 0.5,
+                "gain_median": 0.5,
+                "gain_p95": 0.5,
+                "side_corr_median": 0.5,
+                "foreground_guard": 1.0,
+                "side_residual_ratio": 0.5,
+                "cleanup_output_ratio": 1.0,
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            mixture_path = Path(directory, "mixture.wav")
+            reference_path = Path(directory, "reference.wav")
+            output_path = Path(directory, "out.wav")
+            sf.write(mixture_path, mixture[:, :1], sr, subtype="FLOAT")
+            sf.write(reference_path, reference, sr, subtype="FLOAT")
+            result = _RunResult(argv=None)
+            with patch("audio_overlap_removal.pipeline._cancel_chunk", failing_cancel):
+                process_audio(
+                    str(mixture_path),
+                    str(reference_path),
+                    str(output_path),
+                    alignment_segments=[AlignmentSegment(0.0, float(seconds), 0.0, 0.9)],
+                    chunk_sec=2.0,
+                    momentum=False,
+                    sr=sr,
+                    workers=1,
+                    _result=result,
+                )
+            written, _ = sf.read(output_path, dtype="float32")
+            result.dump(Path(directory, "result.json"), "complete")
+            document = json.loads(Path(directory, "result.json").read_text("utf-8"))
+
+        # The failing chunk (2-4 s) is the mixture, to 24-bit quantisation.
+        np.testing.assert_allclose(
+            written[int(2.1 * sr) : int(3.9 * sr)],
+            mixture[int(2.1 * sr) : int(3.9 * sr), 0],
+            atol=1e-6,
+        )
+        # Its neighbours were still cancelled.
+        self.assertAlmostEqual(float(written[int(1.0 * sr)] - mixture[int(1.0 * sr), 0]), 0.01, places=5)
+        self.assertAlmostEqual(float(written[int(5.0 * sr)] - mixture[int(5.0 * sr), 0]), 0.01, places=5)
+        modes = [chunk["mode"] for chunk in document["chunks"]]
+        self.assertEqual(modes, ["cancelled", "low-confidence", "cancelled"])
+        self.assertEqual(document["chunks"][1]["error_passthrough"], 1.0)
+        self.assertEqual(document["summary"]["passthrough_spans"], [[2.0, 4.0]])
+        # Placeholder measurements of the failed chunk stay out of the summary.
+        self.assertAlmostEqual(document["summary"]["alignment_score"]["min"], 0.9)
+        self.assertTrue(any("passed through" in w for w in document["summary"]["warnings"]))
+
+
 class DiagnosticOutputTests(unittest.TestCase):
     """The log and the result document, and where they land by default."""
 

@@ -946,9 +946,6 @@ def _leading_run(flags: np.ndarray) -> int:
     return count
 
 
-_PROBE_RADIUS_LADDER = (1.0, 4.0, 16.0)
-_PROBE_ACCEPT_SCORE = 0.30
-_PROBE_WIDEN_MARGIN = 0.05
 _MAX_ANCHOR_DEVIATION_SEC = 0.001
 _RESEARCH_RADIUS_SEC = 0.004
 
@@ -959,35 +956,22 @@ def _prior_constrained_match(
     predicted_start: float | None,
     radius: float,
 ) -> tuple[int, float]:
-    """Match near a predicted position, widening only when the prior fails.
+    """Match inside ``radius`` of a predicted position.
 
-    The caller already knows where the query should land to within ``radius``.
-    An unconstrained ``argmax`` over the complete search window turns any
-    repeated passage into a confident wrong answer, so trust the prior first
-    and only pay for a wider window when the constrained score is weak.
+    The caller already knows where the query should land. An unconstrained
+    ``argmax`` over the complete search window turns any repeated passage
+    into a confident wrong answer, so only the window around the prior is
+    searched; when that is not enough, the pipeline decodes a wider window
+    and retries with a wider radius, which is the only widening there is.
     """
     if predicted_start is None:
         return _best_scaled_match(search, query)
-    best: tuple[int, float] | None = None
-    for scale in _PROBE_RADIUS_LADDER:
-        window_radius = radius * scale
-        start = int(max(0.0, np.floor(predicted_start - window_radius)))
-        end = int(
-            min(
-                float(len(search)),
-                np.ceil(predicted_start + len(query) + window_radius),
-            )
-        )
-        if end - start < len(query):
-            continue
-        index, score = _best_scaled_match(search[start:end], query)
-        if best is None or score > best[1] + _PROBE_WIDEN_MARGIN:
-            best = (start + index, score)
-        if best[1] >= _PROBE_ACCEPT_SCORE or (start == 0 and end == len(search)):
-            break
-    if best is None:
+    start = int(max(0.0, np.floor(predicted_start - radius)))
+    end = int(min(float(len(search)), np.ceil(predicted_start + len(query) + radius)))
+    if end - start < len(query):
         return _best_scaled_match(search, query)
-    return best
+    index, score = _best_scaled_match(search[start:end], query)
+    return start + index, score
 
 
 def _fractional_match_index(
