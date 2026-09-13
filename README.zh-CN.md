@@ -354,7 +354,7 @@ max(0.2 + 0.8 * workers, scan)
 | 扫描 | 内存（GB） | 耗时 |
 | --- | --- | --- |
 | `correlation` | `0.6 * 小时数` | 随时长**平方**增长 |
-| `fingerprint` | `0.1 + 0.1 * 小时数` | 随时长线性增长 |
+| `fingerprint` | `0.1 + 0.02 * 小时数` | 随时长线性增长 |
 
 `--chunk` 和 `--sample-rate` 按比例影响 worker 那一项。
 

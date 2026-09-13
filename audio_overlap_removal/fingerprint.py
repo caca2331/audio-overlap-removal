@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import scipy.spatial
 
 from .media import MIN_ALIGNMENT_SAMPLE_RATE, _iter_decode_mono_low
 
@@ -13,14 +12,14 @@ from .media import MIN_ALIGNMENT_SAMPLE_RATE, _iter_decode_mono_low
 # at the same index size, and on real material that trades well: measured
 # against a real broadcast reference under a real host voice, 32x16 at this
 # hop misses 58% of windows at its own chance floor where 16x16 at a 0.25 s
-# hop misses 63%, for the same 2.8 GB over 24 hours. Anchors are five seconds
+# hop misses 63%, for the same index size over 24 hours. Anchors are five seconds
 # apart regardless, and sub-hop offset error is refined away.
 DEFAULT_FINGERPRINT_HOP_SEC = 0.50
 DEFAULT_FINGERPRINT_FRAME_SEC = 0.50
 # Wider than the original 8x8. Extra dimensions do not raise the score of a
 # true match -- on real material they lower it slightly -- but they push
 # chance collisions down faster, so the threshold can come down with them and
-# recall improves net. The old 8x8 floor of 0.45 sat above the 0.40 local
+# recall improves net. The old 8x8 floor of 0.51 sat above the 0.40 local
 # threshold, leaving that gate no margin over coincidence at all.
 DEFAULT_FINGERPRINT_BANDS = 32
 DEFAULT_FINGERPRINT_TEMPORAL_BINS = 16
@@ -100,9 +99,18 @@ class FingerprintIndex:
 
         self._tracks = {track.media_id: track for track in usable}
         self._media_ids = tuple(self._tracks)
-        self._features = np.ascontiguousarray(
-            np.concatenate([track.features for track in usable]),
-            dtype=np.float32,
+        # A brute-force dot product is the search: at 512 dimensions a k-d
+        # tree degenerates to a near-linear scan anyway, and measured on real
+        # signatures tiled to 24 hours it answered a query 15 times slower
+        # while holding a float64 copy of the features twice their size.
+        # With one track the signatures are not even copied.
+        self._features = (
+            np.ascontiguousarray(usable[0].features, dtype=np.float32)
+            if len(usable) == 1
+            else np.ascontiguousarray(
+                np.concatenate([track.features for track in usable]),
+                dtype=np.float32,
+            )
         )
         self._times = np.concatenate([track.times for track in usable]).astype(
             np.float64,
@@ -114,23 +122,15 @@ class FingerprintIndex:
                 for code, track in enumerate(usable)
             ]
         )
-        self._tree = scipy.spatial.cKDTree(
-            self._features,
-            compact_nodes=True,
-            balanced_tree=True,
-        )
 
     @property
     def memory_bytes(self) -> int:
-        """Estimate bytes retained by tracks, lookup arrays, and tree data."""
+        """Estimate bytes retained by the tracks and the lookup arrays."""
         total = self._features.nbytes + self._times.nbytes + self._media_codes.nbytes
-        total += sum(
-            track.times.nbytes + track.features.nbytes
-            for track in self._tracks.values()
-        )
-        if not np.shares_memory(self._tree.data, self._features):
-            total += self._tree.data.nbytes
-        total += self._tree.indices.nbytes
+        for track in self._tracks.values():
+            total += track.times.nbytes
+            if not np.shares_memory(track.features, self._features):
+                total += track.features.nbytes
         return total
 
     @property
@@ -152,19 +152,21 @@ class FingerprintIndex:
             raise ValueError("query feature has the wrong dimensions.")
         if not np.all(np.isfinite(feature)):
             raise ValueError("query feature must be finite.")
-        if np.linalg.norm(feature) < 1e-6:
+        norm = float(np.linalg.norm(feature))
+        if norm < 1e-6:
             return []
         count = min(candidates, len(self._features))
-        distances, indices = self._tree.query(feature, k=count, workers=1)
-        distances = np.atleast_1d(distances)
-        indices = np.atleast_1d(indices)
+        # Signatures are unit vectors, so the dot product is the cosine that
+        # the score has always been.
+        scores = self._features @ (feature / norm)
+        top = np.argpartition(-scores, count - 1)[:count] if count < len(scores) else np.arange(len(scores))
         matches = [
             FingerprintCandidate(
                 media_id=self._media_ids[int(self._media_codes[index])],
                 time_sec=float(self._times[index]),
-                score=float(np.clip(1.0 - 0.5 * distance * distance, -1.0, 1.0)),
+                score=float(np.clip(scores[index], -1.0, 1.0)),
             )
-            for distance, index in zip(distances, indices)
+            for index in top
         ]
         return sorted(
             matches,

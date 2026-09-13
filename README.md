@@ -395,7 +395,7 @@ The scan term depends on which search runs — see [`--scan-mode`](#scan-mode):
 | Scan | Memory (GB) | Time |
 | --- | --- | --- |
 | `correlation` | `0.6 * hours` | grows with the square of the length |
-| `fingerprint` | `0.1 + 0.1 * hours` | grows with the length |
+| `fingerprint` | `0.1 + 0.02 * hours` | grows with the length |
 
 `--chunk` and `--sample-rate` scale the per-worker term proportionally.
 
