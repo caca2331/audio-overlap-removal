@@ -191,10 +191,20 @@ _MAX_RATE_DEVIATION = 0.05
 
 
 def _rate_from_offsets(offsets: np.ndarray, positions: np.ndarray) -> np.ndarray:
-    """Playback rate along a track: the offset grows when the reference lags."""
+    """Playback rate along a track: the offset grows when the reference lags.
+
+    Each point takes the smaller of its forward and backward slopes. A seek
+    inside a segment (the real material has a 70 ms step) makes the slope on
+    one side of it a jump, not a speed; the other side still measures the
+    speed, and a genuine drift is the same on both sides.
+    """
     if len(offsets) < 2 or np.ptp(positions) <= 0.0:
         return np.ones(len(offsets))
-    rates = 1.0 - np.gradient(offsets, positions)
+    steps = np.diff(offsets) / np.maximum(np.diff(positions), 1e-9)
+    forward = np.append(steps, steps[-1])
+    backward = np.insert(steps, 0, steps[0])
+    slopes = np.where(np.abs(forward) <= np.abs(backward), forward, backward)
+    rates = 1.0 - slopes
     return np.clip(rates, 1.0 - _MAX_RATE_DEVIATION, 1.0 + _MAX_RATE_DEVIATION)
 
 

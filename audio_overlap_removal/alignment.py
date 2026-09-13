@@ -936,6 +936,16 @@ class _ReferenceAlignment(NamedTuple):
     covered: bool
 
 
+def _leading_run(flags: np.ndarray) -> int:
+    """Length of the run of True values at the start of ``flags``."""
+    count = 0
+    for flag in flags:
+        if not flag:
+            break
+        count += 1
+    return count
+
+
 _PROBE_RADIUS_LADDER = (1.0, 4.0, 16.0)
 _PROBE_ACCEPT_SCORE = 0.30
 _PROBE_WIDEN_MARGIN = 0.05
@@ -1292,14 +1302,34 @@ def _align_reference(
             return anchors
         positions = np.array([anchors[start][0] for start in starts])
         offsets = np.array([anchors[start][1] for start in starts])
+        scores = np.array([anchors[start][2] for start in starts])
         limit = _MAX_ANCHOR_DEVIATION_SEC * sr
-        size = min(17, len(starts) if len(starts) % 2 else len(starts) - 1)
-        local = scipy.ndimage.median_filter(offsets, size=size, mode="mirror")
+        # Locally suspect: far from the median of the anchors before it AND
+        # from the median of the anchors after it. An anchor just after a
+        # seek disagrees with what came before but agrees with what follows.
+        window = 8
+        far_from_both = np.zeros(len(starts), dtype=bool)
+        for index in range(len(starts)):
+            before = offsets[max(0, index - window) : index]
+            after = offsets[index + 1 : index + 1 + window]
+            sides = [side for side in (before, after) if len(side) >= 2]
+            far_from_both[index] = bool(sides) and all(
+                abs(offsets[index] - np.median(side)) > limit for side in sides
+            )
         slope, intercept, *_ = scipy.stats.theilslopes(offsets, positions)
         off_line = np.abs(offsets - (slope * positions + intercept)) > limit
         if np.count_nonzero(off_line) >= 0.3 * len(starts):
             off_line[:] = False
-        suspect = (np.abs(offsets - local) > limit) | off_line
+        # A run off the line that reaches a chunk edge and scores like the
+        # anchors on the line is a seek, not a wrong period: keep it.
+        on_line_score = float(np.median(scores[~off_line])) if np.any(~off_line) else 0.0
+        leading = _leading_run(off_line)
+        trailing = _leading_run(off_line[::-1])
+        for run in (slice(0, leading), slice(len(starts) - trailing, len(starts))):
+            count = run.stop - run.start
+            if count >= 3 and float(np.median(scores[run])) >= 0.7 * on_line_score:
+                off_line[run] = False
+        suspect = far_from_both | off_line
         if not np.any(suspect):
             return anchors
 
