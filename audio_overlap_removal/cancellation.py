@@ -131,8 +131,8 @@ def _side_band_ratios(
     number cannot tell the two apart.
     """
     frequencies = np.fft.rfftfreq(2_048, d=1.0 / sr)
-    residual_power = np.sum(np.abs(residual_stft) ** 2, axis=1)
-    mixture_power = np.sum(np.abs(mixture_stft) ** 2, axis=1)
+    residual_power = np.sum(_power(residual_stft), axis=1)
+    mixture_power = np.sum(_power(mixture_stft), axis=1)
     ratios: dict[str, float] = {}
     for label, low, high in _SIDE_BANDS_HZ:
         band = (frequencies >= low) & (frequencies < high)
@@ -150,8 +150,19 @@ def _smooth_complex(spectrum: np.ndarray, sigma: tuple[float, float]) -> np.ndar
     ) + 1j * scipy.ndimage.gaussian_filter(spectrum.imag, sigma)
 
 
+def _power(spectrum: np.ndarray) -> np.ndarray:
+    """|z|^2 without the complex magnitude's square root and its temporaries.
+
+    The canceller streams a dozen 1025 x 3000 arrays per chunk; every pass it
+    does not make is memory bandwidth the parallel workers get back.
+    """
+    power = np.square(spectrum.real)
+    power += np.square(spectrum.imag)
+    return power
+
+
 def _smooth_power(spectrum: np.ndarray, sigma: tuple[float, float]) -> np.ndarray:
-    return scipy.ndimage.gaussian_filter(np.abs(spectrum) ** 2, sigma)
+    return scipy.ndimage.gaussian_filter(_power(spectrum), sigma)
 
 
 def _estimate_complex_transfer(
@@ -162,16 +173,16 @@ def _estimate_complex_transfer(
     estimate_coherence: bool = True,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     cross = _smooth_complex(mixture * np.conj(reference), sigma)
-    reference_power = scipy.ndimage.gaussian_filter(np.abs(reference) ** 2, sigma)
+    reference_power = scipy.ndimage.gaussian_filter(_power(reference), sigma)
     regularizer = 0.01 * np.median(reference_power, axis=1, keepdims=True)
     transfer = cross / (reference_power + regularizer + 1e-14)
     transfer_magnitude = np.abs(transfer)
     transfer *= np.minimum(1.0, 1.5 / (transfer_magnitude + 1e-12))
     if not estimate_coherence:
         return transfer, None
-    mixture_power = scipy.ndimage.gaussian_filter(np.abs(mixture) ** 2, sigma)
+    mixture_power = scipy.ndimage.gaussian_filter(_power(mixture), sigma)
     coherence = np.clip(
-        np.abs(cross) ** 2 / (reference_power * mixture_power + 1e-14),
+        _power(cross) / (reference_power * mixture_power + 1e-14),
         0.0,
         1.0,
     )
@@ -193,7 +204,7 @@ def _static_transfer(
     EQ or a codec roll-off.
     """
     cross = np.sum(mixture * np.conj(reference), axis=1)
-    power = np.sum(np.abs(reference) ** 2, axis=1)
+    power = np.sum(_power(reference), axis=1)
     regularizer = 0.01 * np.median(power)
     transfer = cross / (power + regularizer + 1e-14)
     transfer = scipy.ndimage.gaussian_filter1d(
@@ -278,11 +289,12 @@ def _complex_reference_cancel(
         # instead of silently preserving the centered media voice.
         support_sigma = (1.5, 3.0)
         mid_reference_power = scipy.ndimage.gaussian_filter(
-            np.abs(reference_mid_stft) ** 2, support_sigma
+            _power(reference_mid_stft), support_sigma
         )
         side_reference_power = scipy.ndimage.gaussian_filter(
-            np.abs(reference_side_stft) ** 2, support_sigma
+            _power(reference_side_stft), support_sigma
         )
+        mid_reference_median = np.median(mid_reference_power, axis=1, keepdims=True)
         side_support = side_reference_power / (
             mid_reference_power + side_reference_power + 1e-14
         )
@@ -293,8 +305,7 @@ def _complex_reference_cancel(
         )
         center_evidence = np.clip((0.10 - side_support) / 0.10, 0.0, 1.0)
         reference_activity = np.clip(
-            mid_reference_power
-            / (3.0 * np.median(mid_reference_power, axis=1, keepdims=True) + 1e-14),
+            mid_reference_power / (3.0 * mid_reference_median + 1e-14),
             0.0,
             1.0,
         )
@@ -306,11 +317,19 @@ def _complex_reference_cancel(
             coherence_weight * direct_mid_prediction
             + (1.0 - coherence_weight) * safe_mid_prediction
         )
+        del direct_mid_prediction, side_mid_prediction, scalar_mid_prediction
+        del safe_mid_prediction, mid_transfer, mid_coherence, coherence_weight
 
     predicted_side_stft = side_transfer * reference_side_stft
+    del side_transfer, reference_mid_stft, reference_side_stft
     mid_residual_stft = mixture_mid_stft - predicted_mid_stft
     side_residual_stft = mixture_side_stft - predicted_side_stft
-    raw_residual_power = float(np.sum(np.abs(mid_residual_stft) ** 2))
+    del mixture_mid_stft
+    # Measured before cleanup, which only touches Mid; the mixture Side STFT
+    # is not needed after this.
+    side_band_ratios = _side_band_ratios(side_residual_stft, mixture_side_stft, sr)
+    del mixture_side_stft
+    raw_residual_power = float(np.sum(_power(mid_residual_stft)))
     power_sigma = (1.5, 3.0)
     predicted_mid_power: np.ndarray | None = None
 
@@ -347,11 +366,7 @@ def _complex_reference_cancel(
         center_aggression = np.clip(center_cleanup_strength - 1.0, 0.0, 1.0)
         activity_scale = 1.5 - 0.75 * center_aggression
         center_activity = np.clip(
-            mid_reference_power
-            / (
-                activity_scale * np.median(mid_reference_power, axis=1, keepdims=True)
-                + 1e-14
-            ),
+            mid_reference_power / (activity_scale * mid_reference_median + 1e-14),
             0.0,
             1.0,
         )
@@ -405,8 +420,7 @@ def _complex_reference_cancel(
         foreground_absence = 1.0 - foreground_presence
 
         broad_activity = np.clip(
-            mid_reference_power
-            / (0.75 * np.median(mid_reference_power, axis=1, keepdims=True) + 1e-14),
+            mid_reference_power / (0.75 * mid_reference_median + 1e-14),
             0.0,
             1.0,
         )
@@ -433,11 +447,9 @@ def _complex_reference_cancel(
 
     extra = {
         "cleanup_output_ratio": float(
-            np.sqrt(
-                np.sum(np.abs(mid_residual_stft) ** 2) / (raw_residual_power + 1e-20)
-            )
+            np.sqrt(np.sum(_power(mid_residual_stft)) / (raw_residual_power + 1e-20))
         ),
-        **_side_band_ratios(side_residual_stft, mixture_side_stft, sr),
+        **side_band_ratios,
     }
     output = _istft(mid_residual_stft, len(mixture_mid), sr)
     side_residual = _istft(side_residual_stft, len(mixture_side), sr)
