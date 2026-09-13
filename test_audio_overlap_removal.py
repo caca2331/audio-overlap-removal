@@ -2182,6 +2182,70 @@ class OffsetRecoveryIntegrationTests(unittest.TestCase):
         np.testing.assert_allclose(written, mixture, atol=2e-6, rtol=0.0)
 
 
+class ChunkSeamTests(unittest.TestCase):
+    def test_cancelled_chunks_fade_into_each_other(self) -> None:
+        """Two cancelled chunks meet through a fade, not a cut.
+
+        The canceller is replaced by one that adds a different constant per
+        chunk, so the seam between chunks is a known step; the writer must
+        turn it into a linear ramp across the seam length.
+        """
+        sr = 8_000
+        seconds = 6
+        rng = np.random.default_rng(5)
+        mixture = (0.05 * rng.standard_normal((seconds * sr, 2))).astype(np.float32)
+        reference = (0.05 * rng.standard_normal((seconds * sr, 2))).astype(np.float32)
+        levels: list[float] = []
+
+        def fake_cancel(mixture_chunk, reference_search, sr_, *args, **kwargs):
+            levels.append(0.01 * (len(levels) + 1))
+            cleaned = 0.5 * (mixture_chunk[:, 0] + mixture_chunk[:, 1]) + levels[-1]
+            return cleaned.astype(np.float32), {
+                "alignment_score": 0.9,
+                "aligned_start_samples": float(kwargs["predicted_start"]),
+                "control_reduction_db": 6.0,
+                "gain_p05": 0.5,
+                "gain_median": 0.5,
+                "gain_p95": 0.5,
+                "side_corr_median": 0.5,
+                "foreground_guard": 1.0,
+                "side_residual_ratio": 0.5,
+                "cleanup_output_ratio": 1.0,
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            mixture_path = Path(directory, "mixture.wav")
+            reference_path = Path(directory, "reference.wav")
+            output_path = Path(directory, "out.wav")
+            sf.write(mixture_path, mixture[:, :1], sr, subtype="FLOAT")
+            sf.write(reference_path, reference, sr, subtype="FLOAT")
+            with patch("audio_overlap_removal.pipeline._cancel_chunk", fake_cancel):
+                process_audio(
+                    str(mixture_path),
+                    str(reference_path),
+                    str(output_path),
+                    alignment_segments=[AlignmentSegment(0.0, float(seconds), 0.0, 0.9)],
+                    chunk_sec=2.0,
+                    momentum=False,
+                    sr=sr,
+                    workers=1,
+                )
+            written, _ = sf.read(output_path, dtype="float32")
+
+        added = written - mixture[:, 0]
+        self.assertEqual(len(levels), 3)
+        # Inside a chunk the added constant is that chunk's own level.
+        self.assertAlmostEqual(float(added[int(1.5 * sr)]), levels[0], places=5)
+        self.assertAlmostEqual(float(added[int(3.5 * sr)]), levels[1], places=5)
+        # Across the seam it ramps linearly over the fade length (100 ms).
+        self.assertAlmostEqual(
+            float(added[int(2.05 * sr)]), 0.5 * (levels[0] + levels[1]), delta=1e-3
+        )
+        self.assertAlmostEqual(float(added[int(2.15 * sr)]), levels[1], places=5)
+        # No step anywhere inside the matched span, the segment edges included.
+        self.assertLess(float(np.max(np.abs(np.diff(added)))), 1e-3)
+
+
 class DiagnosticOutputTests(unittest.TestCase):
     """The log and the result document, and where they land by default."""
 

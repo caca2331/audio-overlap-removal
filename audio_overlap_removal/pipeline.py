@@ -54,6 +54,7 @@ _MIN_ALIGNMENT_SCORE = 0.20
 _STRONG_ALIGNMENT_SCORE = 0.60
 _MIN_REDUCTION_DB = 1.0
 _MAX_RETRY_RADIUS_SEC = 30.0
+_SEAM_FADE_SEC = 0.1
 _MOMENTUM_BAND = scipy.signal.butter(
     4,
     [80.0, 1_800.0],
@@ -738,9 +739,20 @@ def process_audio(
         )
         return cleaned, diagnostics, predicted_start, window_start
 
+    fade_frames = max(16, int(round(_SEAM_FADE_SEC * sr)))
+
     def process_chunk(
         indexed_chunk: tuple[int, _ProcessingChunk],
-    ) -> tuple[_ProcessingChunk, np.ndarray, dict[str, float] | None]:
+    ) -> tuple[
+        _ProcessingChunk, np.ndarray, np.ndarray | None, dict[str, float] | None
+    ]:
+        """Cancel one chunk; returns its core, its processed tail and diagnostics.
+
+        The tail is the cancelled context just past the core. The next chunk
+        estimates its own transfer function, so the two disagree slightly
+        where they meet; the writer fades from this tail into the next core
+        instead of cutting hard.
+        """
         index, chunk = indexed_chunk
         mixture = _decode_stereo(
             mixture_path,
@@ -845,28 +857,35 @@ def process_audio(
         was_processed = diagnostics is not None and not diagnostics.get(
             "low_confidence_passthrough"
         )
+        tail: np.ndarray | None = None
         if was_processed and len(core):
             # Blend only inside the declared matched segment. Pass-through
             # samples outside it remain untouched.
-            fade_frames = min(len(core), max(16, int(round(0.01 * sr))))
+            edge_frames = min(len(core), max(16, int(round(0.01 * sr))))
             if abs(chunk.position - chunk.active.mixture_start) < 1e-6:
-                weight = np.linspace(0.0, 1.0, fade_frames, dtype=np.float32)
+                weight = np.linspace(0.0, 1.0, edge_frames, dtype=np.float32)
                 if core.ndim == 2:
                     weight = weight[:, np.newaxis]
-                core[:fade_frames] = (
-                    original_core[:fade_frames] * (1.0 - weight)
-                    + core[:fade_frames] * weight
+                core[:edge_frames] = (
+                    original_core[:edge_frames] * (1.0 - weight)
+                    + core[:edge_frames] * weight
                 )
             chunk_end = chunk.position + chunk.core_duration
             if abs(chunk_end - chunk.active.mixture_end) < 1e-6:
-                weight = np.linspace(1.0, 0.0, fade_frames, dtype=np.float32)
+                weight = np.linspace(1.0, 0.0, edge_frames, dtype=np.float32)
                 if core.ndim == 2:
                     weight = weight[:, np.newaxis]
-                core[-fade_frames:] = (
-                    original_core[-fade_frames:] * (1.0 - weight)
-                    + core[-fade_frames:] * weight
+                core[-edge_frames:] = (
+                    original_core[-edge_frames:] * (1.0 - weight)
+                    + core[-edge_frames:] * weight
                 )
-        return chunk, core, diagnostics
+            else:
+                tail = cleaned[
+                    core_start + core_frames : core_start + core_frames + fade_frames
+                ]
+                if len(tail) == 0:
+                    tail = None
+        return chunk, core, tail, diagnostics
 
     with _atomic_soundfile(
         output,
@@ -876,8 +895,9 @@ def process_audio(
         subtype=output_subtype,
     ) as sink:
         previous_sample: float | np.ndarray | None = None
+        previous_tail: np.ndarray | None = None
         passthrough_spans: list[tuple[float, float]] = []
-        for index, (chunk, core, diagnostics) in enumerate(
+        for index, (chunk, core, tail, diagnostics) in enumerate(
             _bounded_ordered_map(process_chunk, iter_indexed_chunks(), workers)
         ):
             if _result is not None:
@@ -885,9 +905,18 @@ def process_audio(
             was_processed = diagnostics is not None and not diagnostics.get(
                 "low_confidence_passthrough"
             )
-            if previous_sample is not None and len(core) and was_processed:
-                # Independent codec seeks and reference discontinuities can
-                # otherwise create a one-sample step at a chunk boundary.
+            if was_processed and previous_tail is not None and len(core):
+                # Two cancelled chunks meet: each modelled the reference with
+                # its own transfer function, so fade from the previous
+                # chunk's continuation into this one rather than cutting.
+                seam = min(len(core), len(previous_tail))
+                weight = np.linspace(0.0, 1.0, seam, dtype=np.float32)
+                if core.ndim == 2:
+                    weight = weight[:, np.newaxis]
+                core[:seam] = previous_tail[:seam] * (1.0 - weight) + core[:seam] * weight
+            elif previous_sample is not None and len(core) and was_processed:
+                # A cancelled chunk after a pass-through one inside a segment:
+                # no continuation exists, so only bridge the one-sample step.
                 ramp_frames = min(len(core), max(16, int(round(0.01 * sr))))
                 correction = previous_sample - core[0]
                 ramp = np.linspace(1.0, 0.0, ramp_frames, dtype=np.float32)
@@ -897,6 +926,7 @@ def process_audio(
                     else ramp[:, np.newaxis] * correction[np.newaxis, :]
                 )
             sink.write(core)
+            previous_tail = tail
             if len(core):
                 previous_sample = float(core[-1]) if core.ndim == 1 else core[-1].copy()
 

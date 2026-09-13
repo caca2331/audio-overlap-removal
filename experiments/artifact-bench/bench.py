@@ -155,6 +155,7 @@ def run_case(
     stages: set[str],
     adaptive_time_warp: bool = True,
     keep_result: bool = False,
+    chunk_sec: float = 30.0,
 ) -> dict:
     reference = _decode_stereo(
         str(REFERENCE), media_start - LEAD_SEC, duration + 2 * LEAD_SEC, SR, 2
@@ -196,6 +197,7 @@ def run_case(
         str(reference_path),
         str(output_path),
         alignment_segments=[segment],
+        chunk_sec=chunk_sec,
         strength=strength,
         adaptive_time_warp=adaptive_time_warp,
         workers=1,
@@ -218,6 +220,23 @@ def run_case(
     side_residual = out_side - fg_side
     media_energy = float(np.sum(media_mid**2))
     parts = decompose(residual, fg_mid, media_mid)
+    # Residual density around chunk seams against the rest of the span: a
+    # positive excess means the seams are audible on top of the residual.
+    seam_half = int(0.05 * SR)
+    seam_mask = np.zeros(len(residual), dtype=bool)
+    boundary = LEAD_SEC + chunk_sec
+    while boundary < media_end - 2.0:
+        centre = int(round(boundary * SR)) - (lead + margin)
+        if 0 <= centre < len(residual):
+            seam_mask[max(0, centre - seam_half) : centre + seam_half] = True
+        boundary += chunk_sec
+    if np.any(seam_mask) and np.any(~seam_mask):
+        seam_excess_db = db(
+            float(np.mean(residual[seam_mask] ** 2)),
+            float(np.mean(residual[~seam_mask] ** 2)),
+        )
+    else:
+        seam_excess_db = 0.0
     row = {
         "media_start": media_start,
         "chain": sorted(stages),
@@ -231,6 +250,8 @@ def run_case(
         "foreground_gain_db_median": parts["foreground_gain_db_median"],
         "foreground_gain_db_p05": parts["foreground_gain_db_p05"],
         "foreground_gain_db_p05_loud": parts["foreground_gain_db_p05_loud"],
+        "seam_excess_db": seam_excess_db,
+        "chunk_sec": chunk_sec,
         "bands_db": {
             f"{int(low)}-{int(high)}": db(
                 band_energy(media_mid, low, high), band_energy(residual, low, high)
@@ -261,6 +282,7 @@ def main() -> None:
         ),
     )
     parser.add_argument("--disable-adaptive-warp", action="store_true")
+    parser.add_argument("--chunk", type=float, default=30.0, help="processing chunk length")
     args = parser.parse_args()
     stages = set() if args.chain == "none" else set(args.chain.split(","))
     unknown = stages - set(CHAIN_STAGES)
@@ -274,10 +296,10 @@ def main() -> None:
                 if args.keep:
                     workdir = Path(args.keep) / f"{int(media_start)}-{'opus' if codec_mix else 'clean'}-s{strength:g}"
                     workdir.mkdir(parents=True, exist_ok=True)
-                    row = run_case(media_start, args.duration, args.foreground_start, codec_mix, strength, workdir, stages, not args.disable_adaptive_warp, True)
+                    row = run_case(media_start, args.duration, args.foreground_start, codec_mix, strength, workdir, stages, not args.disable_adaptive_warp, True, args.chunk)
                 else:
                     with tempfile.TemporaryDirectory() as temporary:
-                        row = run_case(media_start, args.duration, args.foreground_start, codec_mix, strength, Path(temporary), stages, not args.disable_adaptive_warp)
+                        row = run_case(media_start, args.duration, args.foreground_start, codec_mix, strength, Path(temporary), stages, not args.disable_adaptive_warp, False, args.chunk)
                 row["label"] = args.label
                 rows.append(row)
                 bands = " ".join(f"{k}:{v:5.1f}" for k, v in row["bands_db"].items())
@@ -287,6 +309,7 @@ def main() -> None:
                     f"mid {row['mid_suppression_db']:5.2f} dB  side {row['side_suppression_db']:5.2f} dB  "
                     f"leak {row['leak_db']:5.1f}  incoh {row['incoherent_db']:5.1f}  "
                     f"fg {row['foreground_gain_db_median']:+5.2f}/{row['foreground_gain_db_p05']:+5.2f}/{row['foreground_gain_db_p05_loud']:+5.2f} dB  "
+                    f"seam {row['seam_excess_db']:+4.1f} dB  "
                     f"bands[{bands}]  {row['elapsed_sec']:.1f}s",
                     flush=True,
                 )
