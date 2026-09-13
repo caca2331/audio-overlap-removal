@@ -178,27 +178,44 @@ def _measure_chunk_offset(
 
 
 class _MeasuredOffset(NamedTuple):
-    """A chunk's probed offset and whether the probe itself was convincing."""
+    """A chunk's probed offset, whether the probe itself was convincing, and
+    the playback rate (reference seconds per mixture second) the track implies."""
 
     offset: float
     confident: bool
+    rate: float = 1.0
+
+
+_MAX_RATE_DEVIATION = 0.05
+
+
+def _rate_from_offsets(offsets: np.ndarray, positions: np.ndarray) -> np.ndarray:
+    """Playback rate along a track: the offset grows when the reference lags."""
+    if len(offsets) < 2 or np.ptp(positions) <= 0.0:
+        return np.ones(len(offsets))
+    rates = 1.0 - np.gradient(offsets, positions)
+    return np.clip(rates, 1.0 - _MAX_RATE_DEVIATION, 1.0 + _MAX_RATE_DEVIATION)
 
 
 def _fit_offset_trajectory(
-    measurements: list[tuple[int, float | None, float]],
+    measurements: list[tuple[int, float, float | None, float]],
 ) -> dict[int, _MeasuredOffset]:
     """Turn one segment's raw chunk probes into a smooth, outlier-free track.
 
+    Each measurement is ``(chunk index, chunk position, offset, score)``.
     Chunk offsets are physically continuous, so a chunk that probes badly
     (a quiet passage, a repeated musical phrase) is far better served by its
-    neighbours than by its own best guess.
+    neighbours than by its own best guess. The same track also yields each
+    chunk's playback rate, which the chunk aligner needs to measure its
+    anchors sharply.
     """
     indices = np.array([item[0] for item in measurements], dtype=np.float64)
+    positions = np.array([item[1] for item in measurements], dtype=np.float64)
     values = np.array(
-        [np.nan if item[1] is None else item[1] for item in measurements],
+        [np.nan if item[2] is None else item[2] for item in measurements],
         dtype=np.float64,
     )
-    scores = np.array([item[2] for item in measurements], dtype=np.float64)
+    scores = np.array([item[3] for item in measurements], dtype=np.float64)
     confident = np.isfinite(values) & (scores >= _MOMENTUM_MIN_SCORE)
     if np.count_nonzero(confident) < 2:
         return {}
@@ -213,10 +230,11 @@ def _fit_offset_trajectory(
         return {}
     kept_indices = indices[confident][kept]
     fitted = np.interp(indices, kept_indices, baseline[kept])
+    rates = _rate_from_offsets(fitted, positions)
     measured = set(kept_indices.tolist())
     return {
-        int(index): _MeasuredOffset(float(offset), index in measured)
-        for index, offset in zip(indices, fitted)
+        int(index): _MeasuredOffset(float(offset), index in measured, float(rate))
+        for index, offset, rate in zip(indices, fitted, rates)
     }
 
 
@@ -243,14 +261,19 @@ def _momentum_offsets(
         )
     )
     offsets: dict[int, _MeasuredOffset] = {}
-    group: list[tuple[int, float | None, float]] = []
+    group: list[tuple[int, float, float | None, float]] = []
     group_segment: AlignmentSegment | None = None
     for (index, chunk), probe in zip(matched, probes):
         if chunk.active is not group_segment and group:
             offsets.update(_fit_offset_trajectory(group))
             group = []
         group_segment = chunk.active
-        group.append((index, None, 0.0) if probe is None else (index, *probe))
+        position = chunk.position + 0.5 * chunk.core_duration
+        group.append(
+            (index, position, None, 0.0)
+            if probe is None
+            else (index, position, *probe)
+        )
     if group:
         offsets.update(_fit_offset_trajectory(group))
     drift = [
@@ -674,6 +697,7 @@ def process_audio(
         chunk: _ProcessingChunk,
         mixture: np.ndarray,
         offset: float,
+        rate: float,
         radius: float,
     ) -> tuple[np.ndarray, dict[str, float], float, float]:
         predicted_reference_start = chunk.context_start - offset
@@ -710,6 +734,7 @@ def process_audio(
             mixture_channels,
             predicted_start=predicted_start,
             search_radius_sec=radius,
+            predicted_rate=rate,
         )
         return cleaned, diagnostics, predicted_start, window_start
 
@@ -730,18 +755,29 @@ def process_audio(
             diagnostics = None
         else:
             measured = measured_offsets.get(index)
-            offset = (
-                measured.offset
-                if measured is not None
-                else chunk.active.offset_at(
-                    chunk.context_start + 0.5 * chunk.context_duration
+            if measured is not None:
+                offset = measured.offset
+                rate = measured.rate
+            else:
+                span_start = chunk.context_start
+                span_end = chunk.context_start + chunk.context_duration
+                offset = chunk.active.offset_at(0.5 * (span_start + span_end))
+                rate = float(
+                    _rate_from_offsets(
+                        np.array(
+                            [
+                                chunk.active.offset_at(span_start),
+                                chunk.active.offset_at(span_end),
+                            ]
+                        ),
+                        np.array([span_start, span_end]),
+                    )[0]
                 )
-            )
             radius = search_sec
             retried = False
             while True:
                 cleaned, diagnostics, predicted_start, window_start = cancel_attempt(
-                    chunk, mixture, offset, radius
+                    chunk, mixture, offset, rate, radius
                 )
                 if retried:
                     diagnostics["retry_radius_sec"] = radius
@@ -773,6 +809,7 @@ def process_audio(
                 retried = True
 
             diagnostics["offset_used_sec"] = offset
+            diagnostics["predicted_rate"] = rate
             diagnostics["momentum_used"] = float(measured is not None)
             diagnostics["momentum_confident"] = float(
                 measured is not None and measured.confident

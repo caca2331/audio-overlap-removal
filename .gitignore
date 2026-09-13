@@ -13,3 +13,6 @@
 __pycache__/
 *.py[cod]
 /docs/reports/
+
+/experiments/artifact-bench/real-out/
+/experiments/artifact-bench/results.jsonl

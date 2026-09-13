@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import scipy.ndimage
 import scipy.signal
 import soundfile as sf
 
@@ -64,6 +65,28 @@ from audio_overlap_removal.pipeline import (
     _fit_offset_trajectory,
 )
 from audio_overlap_removal.result import _anchor_report, _RunResult
+
+
+def _warp_channels(reference: np.ndarray, positions: np.ndarray) -> np.ndarray:
+    """Resample at fractional positions with a high-quality interpolator.
+
+    Deliberately not the aligner's own interpolator: the tests compare the
+    aligned reference against this truth, so the truth must not share its
+    interpolation error.
+    """
+    oversample = 16
+    upsampled = scipy.signal.resample_poly(reference, oversample, 1, axis=0)
+    return np.column_stack(
+        [
+            scipy.ndimage.map_coordinates(
+                upsampled[:, channel],
+                [positions * oversample],
+                order=3,
+                mode="nearest",
+            )
+            for channel in range(reference.shape[1])
+        ]
+    ).astype(np.float32)
 
 
 class AudioOverlapRemovalTests(unittest.TestCase):
@@ -754,13 +777,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
             + 0.0006 * sample
             + 3.0 * np.sin(2 * np.pi * sample / (2.5 * sr))
         )
-        axis = np.arange(len(reference), dtype=np.float64)
-        warped = np.column_stack(
-            [
-                np.interp(source_positions, axis, reference[:, channel])
-                for channel in range(2)
-            ]
-        ).astype(np.float32)
+        warped = _warp_channels(reference, source_positions)
         foreground = (0.02 * np.sin(2 * np.pi * 190 * sample / sr)).astype(np.float32)
         mixture = warped + foreground[:, np.newaxis]
 
@@ -772,7 +789,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         self.assertGreater(alignment.score, 0.7)
         self.assertLess(relative_error, 0.12)
 
-    def test_adaptive_short_anchors_improve_steady_rate_drift(self) -> None:
+    def test_long_anchors_measure_steady_rate_drift_at_its_own_rate(self) -> None:
         sr = 8_000
         frames = 8 * sr
         pad = sr // 2
@@ -785,38 +802,40 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         ).astype(np.float32)
         sample = np.arange(frames, dtype=np.float64)
         source_positions = pad + 1.005 * sample
-        axis = np.arange(len(reference), dtype=np.float64)
-        warped = np.column_stack(
-            [
-                np.interp(source_positions, axis, reference[:, channel])
-                for channel in range(2)
-            ]
-        ).astype(np.float32)
+        warped = _warp_channels(reference, source_positions)
         foreground = (
             0.04
             * scipy.signal.lfilter([1.0], [1.0, -0.70], rng.standard_normal(frames))
         ).astype(np.float32)
-        diagnostics: dict[str, float] = {}
+        mixture = warped + foreground[:, np.newaxis]
 
-        aligned = _align_reference(
-            warped + foreground[:, np.newaxis],
-            reference,
-            sr,
-            diagnostics,
-        ).reference
-        long_aligned = _align_reference(
-            warped + foreground[:, np.newaxis],
-            reference,
-            sr,
-            adaptive_time_warp=False,
-        ).reference
-        relative_error = np.sqrt(np.mean((aligned - warped) ** 2) / np.mean(warped**2))
-        long_error = np.sqrt(np.mean((long_aligned - warped) ** 2) / np.mean(warped**2))
+        # Without a rate prior the anchors have to discover the 0.5% speed
+        # difference themselves; with the right prior they measure at that
+        # rate from the start. Both must land on the same accurate warp, and
+        # the short 16 ms path, tried because of the drift, has nothing to
+        # add to a straight line and must be rejected by validation.
+        for predicted_rate in (1.0, 1.005):
+            diagnostics: dict[str, float] = {}
+            aligned = _align_reference(
+                mixture,
+                reference,
+                sr,
+                diagnostics,
+                predicted_rate=predicted_rate,
+            ).reference
+            relative_error = np.sqrt(
+                np.mean((aligned - warped) ** 2) / np.mean(warped**2)
+            )
+            self.assertAlmostEqual(diagnostics["anchor_rate"], 1.005, delta=2e-4)
+            self.assertLess(diagnostics["long_anchor_jitter_samples"], 1.0)
+            self.assertEqual(diagnostics["short_warp_accepted"], 0.0)
+            self.assertLess(relative_error, 0.05)
 
-        self.assertEqual(diagnostics["short_warp_considered"], 1.0)
-        self.assertEqual(diagnostics["short_warp_accepted"], 1.0)
-        self.assertLess(relative_error, 0.06)
-        self.assertLess(relative_error, 0.4 * long_error)
+        # A rate prior that is off by more than an anchor's worth of drift is
+        # corrected rather than trusted.
+        diagnostics = {}
+        _align_reference(mixture, reference, sr, diagnostics, predicted_rate=1.002)
+        self.assertAlmostEqual(diagnostics["anchor_rate"], 1.005, delta=2e-4)
 
     def test_adaptive_short_anchors_bound_fast_jitter(self) -> None:
         sr = 8_000
@@ -833,13 +852,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         source_positions = (
             pad + 1.0006 * sample + 3.0 * np.sin(2 * np.pi * sample / (0.25 * sr))
         )
-        axis = np.arange(len(reference), dtype=np.float64)
-        warped = np.column_stack(
-            [
-                np.interp(source_positions, axis, reference[:, channel])
-                for channel in range(2)
-            ]
-        ).astype(np.float32)
+        warped = _warp_channels(reference, source_positions)
         foreground = (
             0.04
             * scipy.signal.lfilter([1.0], [1.0, -0.70], rng.standard_normal(frames))
@@ -861,12 +874,7 @@ class AudioOverlapRemovalTests(unittest.TestCase):
         extreme_positions = (
             pad + 1.0006 * sample + 30.0 * np.sin(2 * np.pi * sample / (0.25 * sr))
         )
-        extreme = np.column_stack(
-            [
-                np.interp(extreme_positions, axis, reference[:, channel])
-                for channel in range(2)
-            ]
-        ).astype(np.float32)
+        extreme = _warp_channels(reference, extreme_positions)
         extreme_diagnostics: dict[str, float] = {}
         _align_reference(
             extreme + foreground[:, np.newaxis],
@@ -1957,18 +1965,20 @@ class ChunkOffsetMomentumTests(unittest.TestCase):
     def test_trajectory_fit_rejects_outliers_and_fills_gaps(self) -> None:
         fitted = _fit_offset_trajectory(
             [
-                (0, 1.0, 0.9),
-                (1, 1.1, 0.9),
-                (2, 1.2, 0.9),
-                (3, 9.9, 0.9),
-                (4, 1.4, 0.9),
-                (5, None, 0.0),
+                (0, 15.0, 1.0, 0.9),
+                (1, 45.0, 1.1, 0.9),
+                (2, 75.0, 1.2, 0.9),
+                (3, 105.0, 9.9, 0.9),
+                (4, 135.0, 1.4, 0.9),
+                (5, 165.0, None, 0.0),
             ]
         )
 
         self.assertAlmostEqual(fitted[0].offset, 1.0)
         self.assertAlmostEqual(fitted[3].offset, 1.3)
         self.assertAlmostEqual(fitted[5].offset, 1.4)
+        # The offset grows 0.1 s per 30 s: the reference plays 1/300 slower.
+        self.assertAlmostEqual(fitted[2].rate, 1.0 - 0.1 / 30.0, places=6)
         self.assertTrue(fitted[0].confident)
         # A borrowed offset must not also lend its neighbours' confidence.
         self.assertFalse(fitted[3].confident)
@@ -1976,7 +1986,7 @@ class ChunkOffsetMomentumTests(unittest.TestCase):
 
     def test_trajectory_fit_gives_up_without_confident_probes(self) -> None:
         self.assertEqual(
-            _fit_offset_trajectory([(0, 1.0, 0.1), (1, None, 0.0)]),
+            _fit_offset_trajectory([(0, 15.0, 1.0, 0.1), (1, 45.0, None, 0.0)]),
             {},
         )
 

@@ -111,6 +111,39 @@ def _istft(spectrum: np.ndarray, length: int, sr: int) -> np.ndarray:
     return audio[:length].astype(np.float32)
 
 
+_SIDE_BANDS_HZ = (
+    ("0_1k", 0.0, 1_000.0),
+    ("1k_4k", 1_000.0, 4_000.0),
+    ("4k_8k", 4_000.0, 8_000.0),
+    ("8k_up", 8_000.0, np.inf),
+)
+
+
+def _side_band_ratios(
+    residual_stft: np.ndarray,
+    mixture_stft: np.ndarray,
+    sr: int,
+) -> dict[str, float]:
+    """Side residual per band: where the transfer model fails, not just how much.
+
+    A high band that will not cancel points at codec damage in the stream, a
+    low band that will not cancel points at the model itself; one broadband
+    number cannot tell the two apart.
+    """
+    frequencies = np.fft.rfftfreq(2_048, d=1.0 / sr)
+    residual_power = np.sum(np.abs(residual_stft) ** 2, axis=1)
+    mixture_power = np.sum(np.abs(mixture_stft) ** 2, axis=1)
+    ratios: dict[str, float] = {}
+    for label, low, high in _SIDE_BANDS_HZ:
+        band = (frequencies >= low) & (frequencies < high)
+        ratios[f"side_residual_ratio_{label}"] = float(
+            np.sqrt(
+                np.sum(residual_power[band]) / (np.sum(mixture_power[band]) + 1e-20)
+            )
+        )
+    return ratios
+
+
 def _smooth_complex(spectrum: np.ndarray, sigma: tuple[float, float]) -> np.ndarray:
     return scipy.ndimage.gaussian_filter(
         spectrum.real, sigma
@@ -157,7 +190,9 @@ def _complex_reference_cancel(
     center_cleanup_strength: float = 0.0,
     silence_cleanup_strength: float = 0.0,
     cleanup_floor: float = 0.2,
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
+    """Cancel in the STFT domain; the dict carries the cleanup ratio and the
+    per-band Side residual measured before cleanup."""
     mixture_mid_stft = _stft(mixture_mid, sr)
     mixture_side_stft = _stft(mixture_side, sr)
     reference_mid_stft = _stft(reference_mid, sr)
@@ -193,7 +228,10 @@ def _complex_reference_cancel(
         return (
             output.astype(np.float32),
             side_residual.astype(np.float32),
-            1.0,
+            {
+                "cleanup_output_ratio": 1.0,
+                **_side_band_ratios(_stft(side_residual, sr), mixture_side_stft, sr),
+            },
         )
     else:
         coherence_weight = np.clip((mid_coherence - 0.3) / 0.4, 0.0, 1.0)
@@ -363,12 +401,17 @@ def _complex_reference_cancel(
         silence_gain = scipy.ndimage.gaussian_filter(silence_gain, sigma=(0.7, 1.0))
         mid_residual_stft *= silence_gain
 
-    cleanup_ratio = float(
-        np.sqrt(np.sum(np.abs(mid_residual_stft) ** 2) / (raw_residual_power + 1e-20))
-    )
+    extra = {
+        "cleanup_output_ratio": float(
+            np.sqrt(
+                np.sum(np.abs(mid_residual_stft) ** 2) / (raw_residual_power + 1e-20)
+            )
+        ),
+        **_side_band_ratios(side_residual_stft, mixture_side_stft, sr),
+    }
     output = _istft(mid_residual_stft, len(mixture_mid), sr)
     side_residual = _istft(side_residual_stft, len(mixture_side), sr)
-    return output, side_residual, cleanup_ratio
+    return output, side_residual, extra
 
 
 def _format_output_channels(
@@ -403,7 +446,7 @@ def _mono_reference_cancel(
     sr: int,
     center_cleanup_strength: float,
     silence_cleanup_strength: float,
-) -> tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, dict[str, float]]:
     """Cancel without Side, preferring the foreground-safe scalar model."""
     scalar_output = mixture_mid - scalar_gain * reference_mid
     residual_stft = _stft(scalar_output, sr)
@@ -417,13 +460,13 @@ def _mono_reference_cancel(
         float(np.median(residual_coherence[active])) if np.any(active) else 0.0
     )
     if coherence_score < 0.15:
-        return scalar_output.astype(np.float32), 1.0
+        return scalar_output.astype(np.float32), {"cleanup_output_ratio": 1.0}
 
     # A coherent residual indicates EQ/FIR coloration that a scalar envelope
     # cannot represent. Reuse the complex path with Mid as its own control;
     # this is deliberately gated because it is more exposed to foreground
     # double-talk than the normal stereo Side-controlled route.
-    output, _, cleanup_ratio = _complex_reference_cancel(
+    output, _, extra = _complex_reference_cancel(
         mixture_mid,
         mixture_mid,
         reference_mid,
@@ -435,7 +478,8 @@ def _mono_reference_cancel(
         center_cleanup_strength,
         silence_cleanup_strength,
     )
-    return output, cleanup_ratio
+    # The "Side" bands were measured on Mid here and would only mislead.
+    return output, {"cleanup_output_ratio": extra["cleanup_output_ratio"]}
 
 
 def _passthrough_diagnostics(reason: str, **extra: float) -> dict[str, float]:
@@ -489,6 +533,7 @@ def _cancel_chunk(
     output_channels: int = 1,
     predicted_start: float | None = None,
     search_radius_sec: float = 0.25,
+    predicted_rate: float = 1.0,
 ) -> tuple[np.ndarray, dict[str, float]]:
     if mixture_channels not in (1, 2):
         raise ValueError("mixture_channels must be 1 or 2.")
@@ -519,6 +564,7 @@ def _cancel_chunk(
         adaptive_time_warp,
         predicted_start=predicted_start,
         search_radius_sec=search_radius_sec,
+        predicted_rate=predicted_rate,
     )
     if alignment.reference is None:
         # The decoded reference window does not span the aligned chunk. The
@@ -553,7 +599,7 @@ def _cancel_chunk(
     # host-side music is not mistaken for removable-media artifacts.
     foreground_guard = float(np.clip((side_corr_median - 0.20) / 0.20, 0.0, 1.0))
     if mono_route:
-        output_mid, cleanup_ratio = _mono_reference_cancel(
+        output_mid, extra = _mono_reference_cancel(
             mixture_mid,
             reference_mid,
             gain,
@@ -565,7 +611,7 @@ def _cancel_chunk(
         )
         modeled_side_residual = mixture_side
     else:
-        output_mid, modeled_side_residual, cleanup_ratio = _complex_reference_cancel(
+        output_mid, modeled_side_residual, extra = _complex_reference_cancel(
             mixture_mid,
             mixture_side,
             reference_mid,
@@ -598,7 +644,7 @@ def _cancel_chunk(
                 )
             )
         ),
-        "cleanup_output_ratio": float(cleanup_ratio),
+        **extra,
         "control_reduction_db": _control_reduction_db(
             control_mixture,
             control_reference,
