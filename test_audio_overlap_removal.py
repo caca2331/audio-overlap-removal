@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import importlib.util
 import io
 import json
 import logging
@@ -18,6 +19,7 @@ import soundfile as sf
 
 from audio_overlap_removal import (
     AlignmentSegment,
+    __version__,
     cancellation_profile,
     discover_alignment_segments,
     process_audio,
@@ -2703,6 +2705,18 @@ class DiagnosticOutputTests(unittest.TestCase):
         full = _anchor_report(segment, "full")
         self.assertEqual(len(full["times"]), 30)
         self.assertEqual(len(full["scores"]), 30)
+
+
+class PackagingBuildTests(unittest.TestCase):
+    def test_archive_version_matches_package_version(self):
+        # build.py names the release archive from the version; it once read a
+        # literal that pyproject.toml no longer has, and only the tag build
+        # noticed. Load it by path: "packaging" is also an installed library.
+        path = Path(__file__).resolve().parent / "packaging" / "build.py"
+        spec = importlib.util.spec_from_file_location("_packaging_build", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module._version(), __version__)
 
 
 if __name__ == "__main__":
