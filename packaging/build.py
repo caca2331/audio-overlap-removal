@@ -24,10 +24,14 @@ SIZE_CEILING = 400_000_000
 
 
 def _version() -> str:
-    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    # pyproject.toml declares the version dynamic, so the only literal is in
+    # _version.py. Read it as text rather than importing the package, which
+    # would pull numpy and scipy into a step that only names an archive.
+    source = ROOT / "audio_overlap_removal" / "_version.py"
+    text = source.read_text(encoding="utf-8")
+    match = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.MULTILINE)
     if match is None:
-        raise SystemExit("Could not read version from pyproject.toml.")
+        raise SystemExit(f"Could not read __version__ from {source}.")
     return match.group(1)
 
 
