@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 — 2026-11-03
+
+Ships the standalone Windows and macOS builds that 0.2.0 never published.
+Nothing changes in scanning or cancellation: 0.2.1 behaves exactly like 0.2.0.
+
+### Packaging
+
+- The standalone build reads its version from the package instead of from
+  `pyproject.toml`, which stopped carrying a version literal once the version
+  became dynamic. The 0.2.0 build stopped there on both targets, so no 0.2.0
+  release was published.
+- The build names its archive before running PyInstaller, so a version it
+  cannot read fails in seconds instead of after a full build.
+
 ## 0.2.0 — 2026-09-13
 
 Chunk alignment turned out to be the first bottleneck on real material, not
