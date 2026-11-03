@@ -131,10 +131,12 @@ def _check_size(bundle: Path) -> int:
 
 def main() -> None:
     tag = _platform_tag()
+    # Name the archive first: anything that can fail without a build should
+    # fail before one is spent on it.
+    stem = f"{NAME}-{_version()}-{tag}"
     bundle = _run_pyinstaller(tag)
     unpacked = _check_size(bundle)
     _smoke_test(bundle)
-    stem = f"{NAME}-{_version()}-{tag}"
     archive = _archive(bundle, stem)
 
     print(f"\n{archive.name}")
